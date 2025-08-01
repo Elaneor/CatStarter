@@ -1,0 +1,25 @@
+{
+  "favorites": [],
+  "bases": [
+    {
+      "name": "Пример базы",
+      "platform": "8.3.23.1701",
+      "connect": "File=C:\\Bases\\Demo;",
+      "parameters": "",
+      "interface": "Auto",
+      "auth_mode": "auto",
+      "auth_os": false,
+      "auth_enterprise": {
+        "username": "",
+        "password": ""
+      },
+      "auth_designer": {
+        "username": "",
+        "password": ""
+      },
+      "last_run": "",
+      "username": "",
+      "password": ""
+    }
+  ]
+}
