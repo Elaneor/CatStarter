@@ -69,6 +69,44 @@ def create_connection_frame(master, base_type_var, entry_vars):
     return frame
 
 def open_properties_dialog(master, data, on_save):
+    # === Режим редактирования ГРУППЫ ===
+    if data.get("type") == "group":
+        dialog = tk.Toplevel(master)
+        dialog.title("Свойства группы")
+        dialog.grab_set()
+
+        frame = ttk.Frame(dialog, padding=10)
+        frame.pack(fill="both", expand=True)
+
+        ttk.Label(frame, text="Наименование группы:").grid(row=0, column=0, sticky="w", pady=2)
+        entry_name = ttk.Entry(frame)
+        entry_name.insert(0, data.get("name", ""))
+        entry_name.grid(row=0, column=1, sticky="ew")
+
+        ttk.Label(frame, text="Платформа (для группы):").grid(row=1, column=0, sticky="w", pady=2)
+        versions = get_installed_1c_versions()  # реальные установленные версии
+        entry_platform = ttk.Combobox(frame, values=versions, state="readonly")
+        entry_platform.grid(row=1, column=1, sticky="ew")
+
+        current = data.get("platform", "")
+        if current in versions:
+            entry_platform.set(current)
+        elif versions:
+            entry_platform.set(versions[0])
+        else:
+            entry_platform.set(current)
+
+        frame.columnconfigure(1, weight=1)
+
+        def save_group():
+            data["name"] = entry_name.get().strip()
+            data["platform"] = entry_platform.get().strip()
+            on_save(data)
+            dialog.destroy()
+
+        ttk.Button(dialog, text="Сохранить", command=save_group).pack(pady=(0, 10))
+        return
+
     dialog = tk.Toplevel(master)
     dialog.title("Свойства базы")
     dialog.grab_set()
