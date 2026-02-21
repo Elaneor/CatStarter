@@ -50,7 +50,8 @@ toolbar.pack(side="top", fill="x", pady=(0, 5))
 
 
 def insert_item(parent, item):
-    iid = f"{parent}_{item['name']}"
+    suffix = abs(hash(item.get("connect", "")))  # стабильно в рамках запуска не гарантировано, но сильно снижает коллизии
+    iid = f"{parent}_base_{item['name']}_{suffix}"
     values = (item.get("platform", ""), item.get("last_run", ""), item.get("size", ""))
     tree_nodes[iid] = item
     tree.insert(parent, "end", iid=iid, text=item["name"], values=values)
@@ -59,10 +60,15 @@ def insert_children(parent, children):
     for child in children:
         if child.get("type") == "group":
             name = child["name"]
-            if "platform" in child:
+            if child.get("platform"):
                 name += f" ({child['platform']})"
-            gid = tree.insert(parent, "end", text=name, open=True)
+
+            # Важно: задаем iid и сохраняем группу в tree_nodes
+            gid = tree.insert(parent, "end", iid=f"{parent}_grp_{child['name']}", text=name, open=True)
+            tree_nodes[gid] = child
+
             insert_children(gid, child.get("children", []))
+
         elif child.get("type") == "base":
             insert_item(parent, child)
 
@@ -72,7 +78,8 @@ def populate_tree():
     for fav in favorites:
         insert_item("favorites", fav)
     for group in starter.get("groups", []):
-        gid = tree.insert("", "end", text=group["name"], open=True)
+        gid = tree.insert("", "end", iid=f"root_grp_{group['name']}", text=group["name"], open=True)
+        tree_nodes[gid] = group
         insert_children(gid, group.get("children", []))
 
 # Дерево баз
@@ -195,7 +202,7 @@ root.bind("<F5>", lambda e: reload_data())
 
 def delete_selected_base():
     selected = tree.focus()
-    if not selected or selected not in tree_nodes:
+    if not selected or selected not in tree_nodes or tree_nodes[selected].get("type") != "base":
         messagebox.showinfo("Удаление", "Выберите базу для удаления.")
         return
 
@@ -225,6 +232,111 @@ def delete_selected_base():
     save_json(starter)
     populate_tree()
 
+def assign_version():
+    selected = tree.focus()
+    if not selected:
+        messagebox.showinfo("Назначить версию", "Выберите базу или группу.")
+        return
+
+    # Берем список установленных версий (функция из edit_dialog.py)
+    try:
+        from edit_dialog import get_installed_1c_versions
+        versions = get_installed_1c_versions()
+    except Exception as e:
+        messagebox.showerror("Ошибка", f"Не удалось получить список версий платформы.\n{e}")
+        return
+
+    if not versions:
+        messagebox.showerror("Ошибка", "Не найдено установленных версий 1С.")
+        return
+
+    # --- Вспомогательные функции ---
+
+    def iter_base_iids_under(iid: str):
+        """Возвращает список iid баз под выбранным узлом дерева (включая вложенные группы)."""
+        # Если это база — возвращаем ее
+        if iid in tree_nodes and tree_nodes[iid].get("type") == "base":
+            return [iid]
+
+        # Иначе это группа/узел — обходим детей
+        result = []
+        for child in tree.get_children(iid):
+            result.extend(iter_base_iids_under(child))
+        return result
+
+    def update_platform_everywhere(name: str, connect: str, new_platform: str) -> int:
+        """Обновляет platform у всех совпадающих баз (и в groups, и в favorites).
+        Возвращает число обновленных объектов (сколько раз реально присвоили)."""
+        updated = 0
+
+        def walk_groups(nodes):
+            nonlocal updated
+            for n in nodes:
+                if n.get("type") == "group":
+                    walk_groups(n.get("children", []))
+                elif n.get("type") == "base":
+                    if n.get("name") == name and n.get("connect") == connect:
+                        if n.get("platform") != new_platform:
+                            n["platform"] = new_platform
+                            updated += 1
+
+        # groups
+        walk_groups(starter.get("groups", []))
+
+        # favorites (там часто лежат копии)
+        for f in starter.get("favorites", []):
+            if f.get("name") == name and f.get("connect") == connect:
+                if f.get("platform") != new_platform:
+                    f["platform"] = new_platform
+                    updated += 1
+
+        return updated
+
+    # --- Диалог выбора версии ---
+    dialog = tk.Toplevel(root)
+    dialog.title("Назначить версию платформы")
+    dialog.grab_set()
+    dialog.resizable(False, False)
+
+    var = tk.StringVar(value=versions[0])
+
+    combo = ttk.Combobox(dialog, values=versions, textvariable=var, state="readonly", width=22)
+    combo.pack(padx=12, pady=(12, 8))
+
+    def do_apply():
+        new_ver = var.get().strip()
+        if not new_ver:
+            dialog.destroy()
+            return
+
+        # Получаем список баз под выделенным узлом (если узел — база, вернет одну)
+        base_iids = iter_base_iids_under(selected)
+        if not base_iids:
+            messagebox.showinfo("Назначить версию", "В выбранной группе нет баз.")
+            dialog.destroy()
+            return
+
+        # Применяем ко всем
+        touched = 0
+        for iid in base_iids:
+            b = tree_nodes.get(iid)
+            if not b:
+                continue
+            name = b.get("name", "")
+            connect = b.get("connect", "")
+            if not name or not connect:
+                continue
+            # обновляем в groups + favorites
+            touched += update_platform_everywhere(name, connect, new_ver)
+
+        save_json(starter)
+        populate_tree()
+        dialog.destroy()
+
+        # touched — сколько объектов реально обновили (может быть > кол-ва баз из-за избранного-копии)
+        messagebox.showinfo("Назначить версию", f"Готово. Назначено: {new_ver}\nОбновлено записей: {touched}")
+
+    ttk.Button(dialog, text="OK", command=do_apply, width=10).pack(pady=(0, 12))
 
 
 # кнопки панели
@@ -240,6 +352,9 @@ btn_duplicate = ttk.Button(toolbar, text="Дублировать ИБ")
 btn_group = ttk.Button(toolbar, text="Создать группу")
 btn_delete = ttk.Button(toolbar, text="Удалить ИБ", command=delete_selected_base)
 btn_settings = ttk.Button(toolbar, text="⚙️ Настройки", command=lambda: open_settings_dialog(root))
+btn_version = ttk.Button(toolbar, text="8.x", command=assign_version)
+btn_version.pack(side="left", padx=2)
+
 
 btn_create.pack(side="left", padx=2)
 btn_duplicate.pack(side="left", padx=2)
@@ -316,11 +431,13 @@ def add_to_favorites():
     selected = tree.focus()
     if selected and selected in tree_nodes:
         item = tree_nodes[selected]
-        if not any(f.get("name") == item.get("name") and f.get("connect") == item.get("connect") for f in favorites):
-            favorites.append(item.copy())
-            starter["favorites"] = favorites
-            save_json(starter)
-            populate_tree()
+        if item.get("type") != "base":
+            return
+            if not any(f.get("name") == item.get("name") and f.get("connect") == item.get("connect") for f in favorites):
+                favorites.append(item.copy())
+                starter["favorites"] = favorites
+                save_json(starter)
+                populate_tree()
 
 def open_properties(item_id):
     def on_save(new_data):
@@ -336,6 +453,10 @@ def open_properties(item_id):
     open_properties_dialog(root, tree_nodes[item_id].copy(), on_save)
 
 def show_context_menu(event):
+    
+    item = tree_nodes.get(selected)
+    if not item or item.get("type") != "base":
+        return
     selected = tree.identify_row(event.y)
     if not selected:
         return
@@ -344,7 +465,7 @@ def show_context_menu(event):
     if not item:
         return
     menu = tk.Menu(root, tearoff=0)
-    if selected.startswith("favorites_"):
+    if tree.parent(selected) == "favorites":
         def remove():
             if item in favorites:
                 favorites.remove(item)
@@ -391,7 +512,7 @@ def get_inherited_platform(item_id):
 
 def launch_selected_base():
     selected = tree.focus()
-    if not selected or selected not in tree_nodes:
+    if not selected or selected not in tree_nodes or tree_nodes[selected].get("type") != "base":
         messagebox.showinfo("Выбор", "Выберите базу")
         return
 
@@ -429,32 +550,27 @@ def launch_selected_base():
 
     cmd = [exe_path] + mode_flag.split() + shlex.split(arg)
 
-    # Аутентификация
+     # Аутентификация
     username = ""
     password = ""
 
-    auth_mode = base.get("auth_mode", "auto")
     auth_os = base.get("auth_os", False)
 
     if not auth_os:
-        if mode == "enterprise":
-            auth_data = base.get("auth_enterprise", {})
-        elif mode == "configurator":
-            auth_data = base.get("auth_designer", {})
-        else:
-            auth_data = {}
-        username = auth_data.get("username", "")
-        password = auth_data.get("password", "")
+        # Единые логин/пароль для базы, независимо от режима запуска
+        username = (base.get("username") or "").strip()
+        password = (base.get("password") or "").strip()
+
+        # На всякий случай поддержим старые записи, где могли быть только auth_enterprise
+        if not username and not password:
+            ae = base.get("auth_enterprise") or {}
+            username = (ae.get("username") or "").strip()
+            password = (ae.get("password") or "").strip()
 
     if username:
         cmd.append(f"/N{username}")
     if password:
         cmd.append(f"/P{password}")
-
-    try:
-        subprocess.Popen(cmd)
-    except Exception as e:
-        messagebox.showerror("Ошибка запуска", str(e))
 
 tree.bind("<Button-3>", show_context_menu)
 tree.bind("<Double-1>", lambda e: launch_selected_base())
