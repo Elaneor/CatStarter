@@ -124,10 +124,10 @@ def open_settings_dialog(master):
         collect_existing_connects(starter.get("groups", []))
 
         def add_to_group_path(groups, folder_path, base):
-            if not folder_path or folder_path.strip() in ["/", "\"]:
+            if not folder_path or folder_path.strip() in ["/", "\\"]:
                 groups.append(base)
                 return
-            parts = folder_path.split("\") if "\" in folder_path else folder_path.split("/")
+            parts = folder_path.split("\\") if "\\" in folder_path else folder_path.split("/")
             current = groups
             for part in parts:
                 match = next((g for g in current if g["type"] == "group" and g["name"] == part), None)
