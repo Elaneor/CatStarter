@@ -46,6 +46,7 @@ def parse_v8i_file(path):
 
         if connect:
             bases.append({
+                "type": "base",
                 "name": name,
                 "connect": connect,
                 "folder": folder,
