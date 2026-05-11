@@ -1,3 +1,4 @@
+import ctypes
 import datetime
 import json
 import tkinter as tk
@@ -13,12 +14,66 @@ from edit_dialog import (
     open_properties_dialog,
     center_window
 )
+from settings_dialog import open_settings_dialog
+
+class ToolTip:
+    def __init__(self, widget, text):
+        self.widget = widget
+        self.text = text
+        self.tooltip = None
+
+        widget.bind("<Enter>", self.show)
+        widget.bind("<Leave>", self.hide)
+
+    def show(self, event=None):
+        if self.tooltip:
+            return
+
+        x = self.widget.winfo_rootx() + 20
+        y = self.widget.winfo_rooty() + 20
+
+        self.tooltip = tw = tk.Toplevel(self.widget)
+        tw.wm_overrideredirect(True)
+        tw.wm_geometry(f"+{x}+{y}")
+
+        label = tk.Label(
+            tw,
+            text=self.text,
+            background="#ffffe0",
+            relief="solid",
+            borderwidth=1,
+            padx=6,
+            pady=2
+        )
+        label.pack()
+
+    def hide(self, event=None):
+        if self.tooltip:
+            self.tooltip.destroy()
+            self.tooltip = None
+
 
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
+def load_icon(name, size=(18, 18)):
+    path = os.path.join(APP_DIR, "assets", "icons", name)
+    img = Image.open(path).resize(size, Image.Resampling.LANCZOS)
+    return ImageTk.PhotoImage(img)
+
 STARTER_JSON = os.path.join(APP_DIR, "starter.json")
 
 root = tk.Tk()
+
+try:
+    ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("CatStarter.App")
+except Exception:
+    pass
+
 root.title("Cat Starter")
+icon_path = os.path.join(APP_DIR, "assets", "cat.ico")
+
+if os.path.exists(icon_path):
+    root.iconbitmap(icon_path)
+
 root.geometry("900x600")
 
 # Правая часть — панель запуска и Син
@@ -36,6 +91,13 @@ frame_left.pack(side="left", fill="both", expand=True)
 toolbar = ttk.Frame(frame_left)
 toolbar.pack(side="top", fill="x", pady=(0, 5))
 
+icon_create = load_icon("add.png")
+icon_copy = load_icon("copy.png")
+icon_group = load_icon("folder.png")
+icon_settings = load_icon("settings.png")
+icon_delete = load_icon("delete.png")
+icon_version = load_icon("version.png")
+
 search_var = tk.StringVar()
 search_entry = ttk.Entry(toolbar, textvariable=search_var)
 search_entry.pack(side="left", fill="x", expand=True, padx=(0, 5))
@@ -48,13 +110,40 @@ def clear_search_placeholder(event=None):
 
 search_entry.bind("<FocusIn>", clear_search_placeholder)
 
-btn_create = ttk.Button(toolbar, text="Создать ИБ", command=lambda: open_register_dialog(root, on_register_save))
-btn_duplicate = ttk.Button(toolbar, text="Дублировать ИБ")
-btn_group = ttk.Button(toolbar, text="Создать группу")
+btn_create = ttk.Button(
+    toolbar,
+    image=icon_create,
+    text="Создать",
+    compound="left",
+    command=lambda: open_register_dialog(root, on_register_save)
+)
+
+btn_duplicate = ttk.Button(
+    toolbar,
+    image=icon_copy,
+    text="Копия",
+    compound="left"
+)
+
+btn_group = ttk.Button(
+    toolbar,
+    image=icon_group,
+    text="Группа",
+    compound="left"
+)
 
 btn_create.pack(side="left", padx=2)
 btn_duplicate.pack(side="left", padx=2)
 btn_group.pack(side="left", padx=2)
+
+btn_settings = ttk.Button(
+    toolbar,
+    image=icon_settings,
+    text="Настройки",
+    compound="left",
+    command=lambda: open_settings_dialog(root)
+)
+btn_settings.pack(side="left", padx=2)
 
 # Дерево баз
 columns = ("platform", "last_run", "size")
@@ -180,7 +269,13 @@ def delete_selected_base():
     populate_tree()
 
 # кнопка Удалить ИБ в меню
-btn_delete = ttk.Button(toolbar, text="Удалить ИБ", command=delete_selected_base)
+btn_delete = ttk.Button(
+    toolbar,
+    image=icon_delete,
+    text="Удалить",
+    compound="left",
+    command=delete_selected_base
+)
 btn_delete.pack(side="left", padx=2)
 
 # Меню режимов запуска
@@ -472,10 +567,21 @@ def assign_platform_to_selected():
 
 btn_platform = ttk.Button(
     toolbar,
+    image=icon_version,
     text="Версия",
+    compound="left",
     command=assign_platform_to_selected
 )
 btn_platform.pack(side="left", padx=2) 
+
+toolbar.icons = [
+    icon_create,
+    icon_copy,
+    icon_group,
+    icon_settings,
+    icon_delete,
+    icon_version
+]
 
 def resolve_1c_path(version):
     def find_exe(ver):
