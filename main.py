@@ -1,35 +1,23 @@
+import datetime
 import json
 import tkinter as tk
 from tkinter import ttk, messagebox
 import os
 import subprocess
 import shlex
+import uuid
 import webbrowser
 from PIL import Image, ImageTk
-from edit_dialog import open_register_dialog, open_properties_dialog
-from settings_dialog import open_settings_dialog, load_settings, parse_v8i_file
+from edit_dialog import (
+    open_register_dialog,
+    open_properties_dialog,
+    center_window
+)
 
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 STARTER_JSON = os.path.join(APP_DIR, "starter.json")
 
-def load_json():
-    if not os.path.exists(STARTER_JSON):
-        return {"favorites": [], "groups": []}
-    with open(STARTER_JSON, "r", encoding="utf-8") as f:
-        return json.load(f)
-
-def save_json(data):
-    with open(STARTER_JSON, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=4)
-
-starter = load_json()
-favorites = starter.get("favorites", [])
-
-settings = load_settings()
-v8i_paths = settings.get("v8i_paths", [])
-
 root = tk.Tk()
-root.iconbitmap(os.path.join(APP_DIR, "assets", "cat.ico"))
 root.title("Cat Starter")
 root.geometry("900x600")
 
@@ -48,39 +36,25 @@ frame_left.pack(side="left", fill="both", expand=True)
 toolbar = ttk.Frame(frame_left)
 toolbar.pack(side="top", fill="x", pady=(0, 5))
 
+search_var = tk.StringVar()
+search_entry = ttk.Entry(toolbar, textvariable=search_var)
+search_entry.pack(side="left", fill="x", expand=True, padx=(0, 5))
+SEARCH_PLACEHOLDER = "\U0001F50D Поиск..."
+search_var.set(SEARCH_PLACEHOLDER)
 
-def insert_item(parent, item):
-    suffix = abs(hash(item.get("connect", "")))  # стабильно в рамках запуска не гарантировано, но сильно снижает коллизии
-    iid = f"{parent}_base_{item['name']}_{suffix}"
-    values = (item.get("platform", ""), item.get("last_run", ""), item.get("size", ""))
-    tree_nodes[iid] = item
-    tree.insert(parent, "end", iid=iid, text=item["name"], values=values)
+def clear_search_placeholder(event=None):
+    if search_var.get() == SEARCH_PLACEHOLDER:
+        search_var.set("")
 
-def insert_children(parent, children):
-    for child in children:
-        if child.get("type") == "group":
-            name = child["name"]
-            if child.get("platform"):
-                name += f" ({child['platform']})"
+search_entry.bind("<FocusIn>", clear_search_placeholder)
 
-            # Важно: задаем iid и сохраняем группу в tree_nodes
-            gid = tree.insert(parent, "end", iid=f"{parent}_grp_{child['name']}", text=name, open=True)
-            tree_nodes[gid] = child
+btn_create = ttk.Button(toolbar, text="Создать ИБ", command=lambda: open_register_dialog(root, on_register_save))
+btn_duplicate = ttk.Button(toolbar, text="Дублировать ИБ")
+btn_group = ttk.Button(toolbar, text="Создать группу")
 
-            insert_children(gid, child.get("children", []))
-
-        elif child.get("type") == "base":
-            insert_item(parent, child)
-
-def populate_tree():
-    tree.delete(*tree.get_children())
-    tree.insert("", "end", iid="favorites", text="★ Избранное", open=True)
-    for fav in favorites:
-        insert_item("favorites", fav)
-    for group in starter.get("groups", []):
-        gid = tree.insert("", "end", iid=f"root_grp_{group['name']}", text=group["name"], open=True)
-        tree_nodes[gid] = group
-        insert_children(gid, group.get("children", []))
+btn_create.pack(side="left", padx=2)
+btn_duplicate.pack(side="left", padx=2)
+btn_group.pack(side="left", padx=2)
 
 # Дерево баз
 columns = ("platform", "last_run", "size")
@@ -91,96 +65,68 @@ tree.heading("last_run", text="Дата")
 tree.heading("size", text="Размер")
 tree.pack(fill="both", expand=True)
 
-tree_nodes = {}
-
-
-
-existing_connects = set()
-
-def collect_connects(groups):
-    for g in groups:
-        if g.get("type") == "base":
-            existing_connects.add(g.get("connect"))
-        elif g.get("type") == "group":
-            collect_connects(g.get("children", []))
-
-collect_connects(starter.get("groups", []))
-
-for v8i_path in v8i_paths:
-    if not os.path.exists(v8i_path):
-        continue
-    try:
-        imported = parse_v8i_file(v8i_path)
-        for b in imported:
-            if b["connect"] in existing_connects:
-                continue
-            base_entry = {
-                "type": "base",
-                "name": b["name"],
-                "platform": b.get("platform", ""),
-                "connect": b["connect"],
-                "last_run": "",
-                "size": "",
-                "parameters": b.get("parameters", ""),
-                "interface": b.get("interface", "Auto"),
-                "auth_mode": b.get("auth_mode", "auto"),
-                "auth_os": b.get("auth_os", False),
-                "username": b.get("username", ""),
-                "password": b.get("password", ""),
-                "auth_enterprise": b.get("auth_enterprise", {"username": "", "password": ""}),
-                "auth_designer": b.get("auth_designer", {"username": "", "password": ""})
-            }
-
-            folder = b.get("folder", "").strip()
-            v8i_root = next((g for g in starter["groups"] if g.get("name") == "🗂 Импорт из .v8i"), None)
-            if not v8i_root:
-                v8i_root = {"type": "group", "name": "🗂 Импорт из .v8i", "children": []}
-                starter["groups"].append(v8i_root)
-            current = v8i_root["children"]
-
-            if folder and folder not in ["/", "\\"]:
-                parts = folder.split("\\") if "\\" in folder else folder.split("/")
-                for part in parts:
-                    part = part.strip()
-                    if not part:
-                        continue
-                    match = next((g for g in current if g.get("type") == "group" and g.get("name") == part), None)
-                    if not match:
-                        match = {"type": "group", "name": part, "children": []}
-                        current.append(match)
-                    current = match["children"]
-
-            current.append(base_entry)
-            existing_connects.add(b["connect"])
-    except Exception as e:
-        print(f"[!] Ошибка при импорте {v8i_path}: {e}")
-
-save_json(starter)
-
-
-populate_tree()
-
 # Поиск по Enter
 def perform_search(event=None):
-    query = search_var.get().strip().lower()
-    if not query:
-        return
-    for iid in tree.get_children("favorites"):
-        item = tree.item(iid)
-        if query in item["text"].lower():
-            tree.see(iid)
-            tree.selection_set(iid)
-            tree.focus(iid)
-            return
-    for top_id in tree.get_children():
-        for iid in tree.get_children(top_id):
-            item = tree.item(iid)
-            if query in item["text"].lower():
-                tree.see(iid)
-                tree.selection_set(iid)
-                tree.focus(iid)
-                return
+    global search_results, search_index
 
+    query = search_var.get().strip().lower()
+    if not query or query == SEARCH_PLACEHOLDER.lower():
+        return "break"
+
+    search_results = collect_search_results(query)
+    search_index = -1
+    find_next()
+
+    return "break"
+
+search_entry.bind("<Return>", perform_search)
+search_results = []
+search_index = -1
+
+
+def collect_search_results(query):
+    result = []
+
+    def walk(parent=""):
+        for iid in tree.get_children(parent):
+            item = tree.item(iid)
+            text = item["text"].lower()
+
+            if query in text:
+                result.append(iid)
+
+            walk(iid)
+
+    walk()
+    return result
+
+
+def find_next(event=None):
+    global search_results, search_index
+
+    query = search_var.get().strip().lower()
+    if not query or query == SEARCH_PLACEHOLDER.lower():
+        return "break"
+
+    if not search_results:
+        search_results = collect_search_results(query)
+        search_index = -1
+
+    if not search_results:
+        return "break"
+
+    search_index = (search_index + 1) % len(search_results)
+    iid = search_results[search_index]
+
+    tree.see(iid)
+    tree.selection_set(iid)
+    tree.focus(iid)
+
+    return "break"
+
+
+root.bind("<F3>", find_next)
+search_entry.bind("<F3>", find_next)
 
 
 # Ctrl+F → фокус в поиск
@@ -190,6 +136,7 @@ def focus_search(event=None):
     return "break"
 
 root.bind("<Control-f>", focus_search)
+root.bind("<Control-F>", focus_search)
 
 # F5 → перезагрузка данных
 def reload_data():
@@ -202,7 +149,7 @@ root.bind("<F5>", lambda e: reload_data())
 
 def delete_selected_base():
     selected = tree.focus()
-    if not selected or selected not in tree_nodes or tree_nodes[selected].get("type") != "base":
+    if not selected or selected not in tree_nodes:
         messagebox.showinfo("Удаление", "Выберите базу для удаления.")
         return
 
@@ -232,136 +179,9 @@ def delete_selected_base():
     save_json(starter)
     populate_tree()
 
-def assign_version():
-    selected = tree.focus()
-    if not selected:
-        messagebox.showinfo("Назначить версию", "Выберите базу или группу.")
-        return
-
-    # Берем список установленных версий (функция из edit_dialog.py)
-    try:
-        from edit_dialog import get_installed_1c_versions
-        versions = get_installed_1c_versions()
-    except Exception as e:
-        messagebox.showerror("Ошибка", f"Не удалось получить список версий платформы.\n{e}")
-        return
-
-    if not versions:
-        messagebox.showerror("Ошибка", "Не найдено установленных версий 1С.")
-        return
-
-    # --- Вспомогательные функции ---
-
-    def iter_base_iids_under(iid: str):
-        """Возвращает список iid баз под выбранным узлом дерева (включая вложенные группы)."""
-        # Если это база — возвращаем ее
-        if iid in tree_nodes and tree_nodes[iid].get("type") == "base":
-            return [iid]
-
-        # Иначе это группа/узел — обходим детей
-        result = []
-        for child in tree.get_children(iid):
-            result.extend(iter_base_iids_under(child))
-        return result
-
-    def update_platform_everywhere(name: str, connect: str, new_platform: str) -> int:
-        """Обновляет platform у всех совпадающих баз (и в groups, и в favorites).
-        Возвращает число обновленных объектов (сколько раз реально присвоили)."""
-        updated = 0
-
-        def walk_groups(nodes):
-            nonlocal updated
-            for n in nodes:
-                if n.get("type") == "group":
-                    walk_groups(n.get("children", []))
-                elif n.get("type") == "base":
-                    if n.get("name") == name and n.get("connect") == connect:
-                        if n.get("platform") != new_platform:
-                            n["platform"] = new_platform
-                            updated += 1
-
-        # groups
-        walk_groups(starter.get("groups", []))
-
-        # favorites (там часто лежат копии)
-        for f in starter.get("favorites", []):
-            if f.get("name") == name and f.get("connect") == connect:
-                if f.get("platform") != new_platform:
-                    f["platform"] = new_platform
-                    updated += 1
-
-        return updated
-
-    # --- Диалог выбора версии ---
-    dialog = tk.Toplevel(root)
-    dialog.title("Назначить версию платформы")
-    dialog.grab_set()
-    dialog.resizable(False, False)
-
-    var = tk.StringVar(value=versions[0])
-
-    combo = ttk.Combobox(dialog, values=versions, textvariable=var, state="readonly", width=22)
-    combo.pack(padx=12, pady=(12, 8))
-
-    def do_apply():
-        new_ver = var.get().strip()
-        if not new_ver:
-            dialog.destroy()
-            return
-
-        # Получаем список баз под выделенным узлом (если узел — база, вернет одну)
-        base_iids = iter_base_iids_under(selected)
-        if not base_iids:
-            messagebox.showinfo("Назначить версию", "В выбранной группе нет баз.")
-            dialog.destroy()
-            return
-
-        # Применяем ко всем
-        touched = 0
-        for iid in base_iids:
-            b = tree_nodes.get(iid)
-            if not b:
-                continue
-            name = b.get("name", "")
-            connect = b.get("connect", "")
-            if not name or not connect:
-                continue
-            # обновляем в groups + favorites
-            touched += update_platform_everywhere(name, connect, new_ver)
-
-        save_json(starter)
-        populate_tree()
-        dialog.destroy()
-
-        # touched — сколько объектов реально обновили (может быть > кол-ва баз из-за избранного-копии)
-        messagebox.showinfo("Назначить версию", f"Готово. Назначено: {new_ver}\nОбновлено записей: {touched}")
-
-    ttk.Button(dialog, text="OK", command=do_apply, width=10).pack(pady=(0, 12))
-
-
-# кнопки панели
-search_var = tk.StringVar()
-search_entry = ttk.Entry(toolbar, textvariable=search_var)
-search_entry.pack(side="left", fill="x", expand=True, padx=(0, 5))
-search_entry.insert(0, "\U0001F50D Поиск...")
-
-search_entry.bind("<Return>", perform_search)
-
-btn_create = ttk.Button(toolbar, text="Создать ИБ", command=lambda: open_register_dialog(root, on_register_save))
-btn_duplicate = ttk.Button(toolbar, text="Дублировать ИБ")
-btn_group = ttk.Button(toolbar, text="Создать группу")
+# кнопка Удалить ИБ в меню
 btn_delete = ttk.Button(toolbar, text="Удалить ИБ", command=delete_selected_base)
-btn_settings = ttk.Button(toolbar, text="⚙️ Настройки", command=lambda: open_settings_dialog(root))
-btn_version = ttk.Button(toolbar, text="8.x", command=assign_version)
-btn_version.pack(side="left", padx=2)
-
-
-btn_create.pack(side="left", padx=2)
-btn_duplicate.pack(side="left", padx=2)
-btn_group.pack(side="left", padx=2)
 btn_delete.pack(side="left", padx=2)
-btn_settings.pack(side="left", padx=2)
-
 
 # Меню режимов запуска
 menu_bar = ttk.Frame(frame_right)
@@ -394,8 +214,68 @@ ttk.Combobox(param_frame, values=["Auto", "Версия 8.5", "Такси", "О�
 session_var = tk.BooleanVar(value=True)
 ttk.Checkbutton(param_frame, text="Текущая сессия", variable=session_var).pack(anchor="w")
 
+starter = {}
+favorites = []
+tree_nodes = {}
+
+def load_window_geometry():
+    return starter.get("window_geometry", "900x600")
+
+def save_window_geometry():
+    starter["window_geometry"] = root.geometry()
+    save_json(starter)
+
+def on_close():
+    save_window_geometry()
+    root.destroy()
+
+def load_json():
+    if not os.path.exists(STARTER_JSON):
+        return {"favorites": [], "groups": []}
+    with open(STARTER_JSON, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+def save_json(data):
+    with open(STARTER_JSON, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=4)
+
+def ensure_id(item):
+    if not item.get("id"):
+        item["id"] = str(uuid.uuid4())
+    return item["id"]
 
 
+def insert_item(parent, item):
+    base_id = ensure_id(item)
+    iid = base_id
+
+    if parent == "favorites":
+        iid = f"fav_{base_id}"
+
+    values = (item.get("platform", ""), item.get("last_run", ""), item.get("size", ""))
+    tree_nodes[iid] = item
+    tree.insert(parent, "end", iid=iid, text=item["name"], values=values)
+
+def insert_children(parent, children):
+    for child in children:
+        if child.get("type") == "group":
+            gid = tree.insert(parent, "end", text=child["name"], open=True)
+            insert_children(gid, child.get("children", []))
+        elif child.get("type") == "base":
+            insert_item(parent, child)
+
+def populate_tree():
+    tree_nodes.clear()
+    tree.delete(*tree.get_children())
+
+    tree.insert("", "end", iid="favorites", text="★ Избранное", open=True)
+
+    for fav in favorites:
+        insert_item("favorites", fav)
+
+    for group in starter.get("groups", []):
+        gid = tree.insert("", "end", text=group["name"], open=True)
+        insert_children(gid, group.get("children", []))
 
 def on_register_save(result):
     base_entry = {
@@ -407,16 +287,10 @@ def on_register_save(result):
         "interface": result.get("interface", ""),
         "username": result.get("username", ""),
         "password": result.get("password", ""),
-        "auth_mode": result.get("auth_mode", "auto"),
-        "auth_os": result.get("auth_os", False),
         "auth_enterprise": result.get("auth_enterprise", {
-            "username": result.get("username", ""),
-            "password": result.get("password", "")
-        }),
-        "auth_designer": result.get("auth_designer", {
-            "username": "",
-            "password": ""
-        }),
+        "username": result.get("username", ""),
+        "password": result.get("password", "")
+    }),
         "last_run": "",
         "size": ""
     }
@@ -429,108 +303,237 @@ def on_register_save(result):
 
 def add_to_favorites():
     selected = tree.focus()
+
     if selected and selected in tree_nodes:
         item = tree_nodes[selected]
+
         if item.get("type") != "base":
             return
-            if not any(f.get("name") == item.get("name") and f.get("connect") == item.get("connect") for f in favorites):
-                favorites.append(item.copy())
-                starter["favorites"] = favorites
-                save_json(starter)
-                populate_tree()
+
+        if not any(
+            f.get("name") == item.get("name")
+            and f.get("connect") == item.get("connect")
+            for f in favorites
+        ):
+            favorites.append(item.copy())
+            starter["favorites"] = favorites
+            save_json(starter)
+            populate_tree()
+
+def update_base_everywhere(name, connect, updates):
+    def walk(nodes):
+        for node in nodes:
+            if node.get("type") == "group":
+                walk(node.get("children", []))
+            elif node.get("type") == "base":
+                if node.get("name") == name and node.get("connect") == connect:
+                    node.update(updates)
+
+    walk(starter.get("groups", []))
+
+    for fav in starter.get("favorites", []):
+        if fav.get("name") == name and fav.get("connect") == connect:
+            fav.update(updates)
 
 def open_properties(item_id):
+    item = tree_nodes[item_id]
+
     def on_save(new_data):
-        # Обновляем ссылку на саму базу
-        tree_nodes[item_id].update(new_data)
+        old_name = item.get("name")
+        old_connect = item.get("connect")
 
-        # Обновляем имя в дереве
-        tree.item(item_id, text=new_data["name"])
+        update_base_everywhere(old_name, old_connect, new_data)
 
-        # Сохраняем файл
         save_json(starter)
+        populate_tree()
 
-    open_properties_dialog(root, tree_nodes[item_id].copy(), on_save)
+    open_properties_dialog(root, item.copy(), on_save)
 
 def show_context_menu(event):
-    
-    item = tree_nodes.get(selected)
-    if not item or item.get("type") != "base":
-        return
     selected = tree.identify_row(event.y)
     if not selected:
         return
+
     tree.selection_set(selected)
+    tree.focus(selected)
+
     item = tree_nodes.get(selected)
     if not item:
         return
+
     menu = tk.Menu(root, tearoff=0)
+
     if tree.parent(selected) == "favorites":
         def remove():
-            if item in favorites:
-                favorites.remove(item)
-                starter["favorites"] = favorites
-                save_json(starter)
-                populate_tree()
+            favorites[:] = [
+                f for f in favorites
+                if not (
+                    f.get("name") == item.get("name")
+                    and f.get("connect") == item.get("connect")
+                )
+            ]
+            starter["favorites"] = favorites
+            save_json(starter)
+            populate_tree()
+
         menu.add_command(label="Удалить из избранного", command=remove)
     else:
         menu.add_command(label="Добавить в избранное", command=add_to_favorites)
+
     menu.add_separator()
-		
-		
     menu.add_command(label="Свойства", command=lambda: open_properties(selected))
     menu.add_command(label="Удалить ИБ", command=delete_selected_base)
     menu.post(event.x_root, event.y_root)
 
-def resolve_1c_path(version):
+def get_installed_1c_versions():
+    versions = []
+
     base_dirs = [
-        os.path.join(os.environ.get("PROGRAMFILES", "C:\\Program Files"), "1cv8", version, "bin"),
-        os.path.join(os.environ.get("PROGRAMFILES(X86)", "C:\\Program Files (x86)"), "1cv8", version, "bin")
+        os.path.join(os.environ.get("PROGRAMFILES", "C:\\Program Files"), "1cv8"),
+        os.path.join(os.environ.get("PROGRAMFILES(X86)", "C:\\Program Files (x86)"), "1cv8")
     ]
+
     for base_dir in base_dirs:
-        if os.path.exists(os.path.join(base_dir, "1cv8c.exe")):
-            return os.path.join(base_dir, "1cv8c.exe")
-        elif os.path.exists(os.path.join(base_dir, "1cv8.exe")):
-            return os.path.join(base_dir, "1cv8.exe")
-    return None
+        if not os.path.exists(base_dir):
+            continue
 
-def get_inherited_platform(item_id):
+        for name in os.listdir(base_dir):
+            bin_dir = os.path.join(base_dir, name, "bin")
+            exe_1cv8 = os.path.join(bin_dir, "1cv8.exe")
+            exe_1cv8c = os.path.join(bin_dir, "1cv8c.exe")
+
+            if os.path.exists(exe_1cv8) or os.path.exists(exe_1cv8c):
+                versions.append(name)
+
+    return sorted(set(versions), reverse=True)
+
+def collect_bases_from_node(item_id):
+    result = []
+
     item = tree_nodes.get(item_id)
-    if item.get("platform"):
-        return item["platform"]
+    if item and item.get("type") == "base":
+        result.append(item)
+        return result
 
-    parent = tree.parent(item_id)
-    while parent:
-        parent_item = tree.item(parent)
-        parent_data = tree_nodes.get(parent)
-        if parent_data and parent_data.get("platform"):
-            return parent_data["platform"]
-        parent = tree.parent(parent)
-    return ""
+    for child_id in tree.get_children(item_id):
+        result.extend(collect_bases_from_node(child_id))
 
+    return result
 
-
-def launch_selected_base():
+def assign_platform_to_selected():
     selected = tree.focus()
-    if not selected or selected not in tree_nodes or tree_nodes[selected].get("type") != "base":
-        messagebox.showinfo("Выбор", "Выберите базу")
+    if not selected:
+        messagebox.showinfo("Версия платформы", "Выберите группу или базу.")
         return
 
+    bases = collect_bases_from_node(selected)
+    if not bases:
+        messagebox.showinfo("Версия платформы", "В выбранной группе нет баз.")
+        return
+
+    versions = get_installed_1c_versions()
+    if not versions:
+        messagebox.showerror("Версия платформы", "Установленные версии платформы не найдены.")
+        return
+
+    dialog = tk.Toplevel(root)
+    dialog.title("Назначить версию платформы")
+    dialog.transient(root)
+    dialog.grab_set()
+    dialog.lift()
+    dialog.focus_force()
+
+    center_window(root, dialog, 320, 140)
+
+    ttk.Label(dialog, text=f"Баз будет обновлено: {len(bases)}").pack(anchor="w", padx=10, pady=(10, 4))
+
+    platform_var = tk.StringVar(value=versions[0])
+    combo = ttk.Combobox(dialog, textvariable=platform_var, values=versions, state="readonly", width=25)
+    combo.pack(fill="x", padx=10, pady=4)
+    combo.focus_set()
+
+    def apply_version():
+        selected_version = platform_var.get().strip()
+        if not selected_version:
+            return
+
+        for base in bases:
+            update_base_everywhere(
+                base.get("name"),
+                base.get("connect"),
+                {"platform": selected_version}
+            )
+
+        save_json(starter)
+        populate_tree()
+        dialog.destroy()
+
+    ttk.Button(dialog, text="Назначить", command=apply_version).pack(pady=(6, 10))
+
+btn_platform = ttk.Button(
+    toolbar,
+    text="Версия",
+    command=assign_platform_to_selected
+)
+btn_platform.pack(side="left", padx=2) 
+
+def resolve_1c_path(version):
+    def find_exe(ver):
+        base_dirs = [
+            os.path.join(os.environ.get("PROGRAMFILES", "C:\\Program Files"), "1cv8", ver, "bin"),
+            os.path.join(os.environ.get("PROGRAMFILES(X86)", "C:\\Program Files (x86)"), "1cv8", ver, "bin")
+        ]
+
+        for base_dir in base_dirs:
+            exe_1cv8c = os.path.join(base_dir, "1cv8c.exe")
+            exe_1cv8 = os.path.join(base_dir, "1cv8.exe")
+
+            if os.path.exists(exe_1cv8c):
+                return exe_1cv8c
+            if os.path.exists(exe_1cv8):
+                return exe_1cv8
+
+        return None
+
+    # 1. Сначала ищем точную версию
+    exact = find_exe(version)
+    if exact:
+        return exact
+
+    # 2. Если точной нет, ищем ближайшую установленную того же семейства
+    # Например, для 8.5.1.536 подойдет 8.5.4.1253
+    parts = version.split(".")
+    if len(parts) >= 2:
+        family = ".".join(parts[:2])
+        installed_versions = get_installed_1c_versions()
+
+        family_versions = [
+            v for v in installed_versions
+            if v.startswith(family + ".")
+        ]
+
+        if family_versions:
+            fallback = family_versions[0]
+            return find_exe(fallback)
+
+    return None
+            
+def launch_selected_base():
+    selected = tree.focus()
+    if not selected or selected not in tree_nodes:
+        messagebox.showinfo("Выбор", "Выберите базу")
+        return
     base = tree_nodes[selected]
     connect = base.get("connect", "")
-    version = get_inherited_platform(selected)
+    version = base.get("platform", "")
     if not connect or not version:
         messagebox.showerror("Ошибка", "Отсутствует строка подключения или версия платформы.")
         return
-
     exe_path = resolve_1c_path(version)
     if not exe_path:
         messagebox.showerror("Ошибка", f"Не найдена исполняемая программа для платформы {version}.")
         return
-
     mode = launch_mode.get()
-
-    # Аргумент строки подключения
     connect_lower = connect.lower()
     if "ws=" in connect_lower:
         ws_url = connect.split("ws=", 1)[-1].split(";", 1)[0]
@@ -540,37 +543,34 @@ def launch_selected_base():
     else:
         path = connect.replace("File=", "").replace(";", "")
         arg = f'/F"{path}"'
-
-    # Режим запуска
     mode_flag = "ENTERPRISE"
     if mode == "configurator":
         mode_flag = "DESIGNER"
     elif mode == "test":
         mode_flag = "ENTERPRISE /C"
-
     cmd = [exe_path] + mode_flag.split() + shlex.split(arg)
+    username = (base.get("username") or "").strip()
+    password = (base.get("password") or "").strip()
 
-     # Аутентификация
-    username = ""
-    password = ""
-
-    auth_os = base.get("auth_os", False)
-
-    if not auth_os:
-        # Единые логин/пароль для базы, независимо от режима запуска
-        username = (base.get("username") or "").strip()
-        password = (base.get("password") or "").strip()
-
-        # На всякий случай поддержим старые записи, где могли быть только auth_enterprise
-        if not username and not password:
-            ae = base.get("auth_enterprise") or {}
-            username = (ae.get("username") or "").strip()
-            password = (ae.get("password") or "").strip()
+    if not username and not password:
+        auth_enterprise = base.get("auth_enterprise") or {}
+        username = (auth_enterprise.get("username") or "").strip()
+        password = (auth_enterprise.get("password") or "").strip()
 
     if username:
         cmd.append(f"/N{username}")
     if password:
         cmd.append(f"/P{password}")
+    try:
+        subprocess.Popen(cmd)
+
+        today = datetime.date.today().isoformat()
+        update_base_everywhere(base.get("name"), base.get("connect"), {"last_run": today})
+        save_json(starter)
+        populate_tree()
+
+    except Exception as e:
+        messagebox.showerror("Ошибка запуска", str(e))
 
 tree.bind("<Button-3>", show_context_menu)
 tree.bind("<Double-1>", lambda e: launch_selected_base())
@@ -587,5 +587,9 @@ try:
 except Exception as e:
     print(f"Син не загрузился: {e}")
 
-
+starter = load_json()
+root.geometry(load_window_geometry())
+favorites = starter.get("favorites", [])
+populate_tree()
+root.protocol("WM_DELETE_WINDOW", on_close)
 root.mainloop()
