@@ -5,7 +5,7 @@ import tkinter as tk
 from tkinter import ttk, messagebox
 import os
 import subprocess
-import shlex
+import sys
 import uuid
 import webbrowser
 from PIL import Image, ImageTk
@@ -53,9 +53,15 @@ class ToolTip:
             self.tooltip = None
 
 
-APP_DIR = os.path.dirname(os.path.abspath(__file__))
+if getattr(sys, 'frozen', False):
+    APP_DIR = os.path.dirname(sys.executable)
+    RESOURCE_DIR = getattr(sys, "_MEIPASS", APP_DIR)
+else:
+    APP_DIR = os.path.dirname(os.path.abspath(__file__))
+    RESOURCE_DIR = APP_DIR
+    
 def load_icon(name, size=(18, 18)):
-    path = os.path.join(APP_DIR, "assets", "icons", name)
+    path = os.path.join(RESOURCE_DIR, "assets", "icons", name)
     img = Image.open(path).resize(size, Image.Resampling.LANCZOS)
     return ImageTk.PhotoImage(img)
 
@@ -69,7 +75,7 @@ except Exception:
     pass
 
 root.title("Cat Starter")
-icon_path = os.path.join(APP_DIR, "assets", "cat.ico")
+icon_path = os.path.join(RESOURCE_DIR, "assets", "cat.ico")
 
 if os.path.exists(icon_path):
     root.iconbitmap(icon_path)
@@ -141,7 +147,7 @@ btn_settings = ttk.Button(
     image=icon_settings,
     text="Настройки",
     compound="left",
-    command=lambda: open_settings_dialog(root)
+    command=lambda: open_settings_dialog(root, reload_data)
 )
 btn_settings.pack(side="left", padx=2)
 
@@ -153,6 +159,33 @@ tree.heading("platform", text="Платформа")
 tree.heading("last_run", text="Дата")
 tree.heading("size", text="Размер")
 tree.pack(fill="both", expand=True)
+
+status_var = tk.StringVar(value="")
+
+status_label = ttk.Label(
+    frame_left,
+    textvariable=status_var,
+    anchor="w"
+)
+
+status_label.pack(fill="x", pady=(4, 0))
+
+def update_status():
+    selected = tree.focus()
+
+    if not selected or selected not in tree_nodes:
+        status_var.set("")
+        return
+
+    base = tree_nodes[selected]
+
+    text = (
+        f'{base.get("name", "")} | '
+        f'{base.get("platform", "")} | '
+        f'{base.get("connect", "")}'
+    )
+
+    status_var.set(text)
 
 # Поиск по Enter
 def perform_search(event=None):
@@ -236,6 +269,24 @@ def reload_data():
 
 root.bind("<F5>", lambda e: reload_data())
 
+# Home → вернуться в начало списка
+def go_home(event=None):
+    children = tree.get_children()
+
+    if not children:
+        return "break"
+
+    first = children[0]
+
+    tree.see(first)
+    tree.selection_set(first)
+    tree.focus(first)
+
+    return "break"
+
+root.bind("<Home>", go_home)
+
+
 def delete_selected_base():
     selected = tree.focus()
     if not selected or selected not in tree_nodes:
@@ -298,16 +349,13 @@ param_frame = ttk.LabelFrame(frame_right, text="Параметры запуск�
 param_frame.pack(fill="x", pady=(10, 5))
 
 launch_mode = tk.StringVar(value="enterprise")
-for text, val in [("Предприятие", "enterprise"), ("Конфигуратор", "configurator"), ("Тест", "test")]:
+for text, val in [("Предприятие", "enterprise"), ("Конфигуратор", "configurator")]:
     ttk.Radiobutton(param_frame, text=text, variable=launch_mode, value=val).pack(anchor="w")
 
 ttklab = ttk.Label(param_frame, text="Интерфейс:")
 ttklab.pack(anchor="w", pady=(10, 0))
 interface = tk.StringVar(value="Auto")
 ttk.Combobox(param_frame, values=["Auto", "Версия 8.5", "Такси", "Обычный"], textvariable=interface, state="readonly").pack(anchor="w")
-
-session_var = tk.BooleanVar(value=True)
-ttk.Checkbutton(param_frame, text="Текущая сессия", variable=session_var).pack(anchor="w")
 
 starter = {}
 favorites = []
@@ -326,7 +374,11 @@ def on_close():
 
 def load_json():
     if not os.path.exists(STARTER_JSON):
-        return {"favorites": [], "groups": []}
+        return {
+            "favorites": [],
+            "groups": [],
+            "window_geometry": "900x600"
+        }
     with open(STARTER_JSON, "r", encoding="utf-8") as f:
         return json.load(f)
 
@@ -444,6 +496,128 @@ def open_properties(item_id):
 
     open_properties_dialog(root, item.copy(), on_save)
 
+def collect_group_paths():
+    result = []
+
+    def walk(groups, prefix=""):
+        for group in groups:
+            if group.get("type") != "group":
+                continue
+
+            name = group.get("name", "")
+            path = f"{prefix}\\{name}" if prefix else name
+            result.append(path)
+
+            walk(group.get("children", []), path)
+
+    walk(starter.get("groups", []))
+    return result
+
+
+def remove_base_from_groups(groups, name, connect):
+    for group in groups:
+        if group.get("type") != "group":
+            continue
+
+        children = group.get("children", [])
+
+        for child in list(children):
+            if (
+                child.get("type") == "base"
+                and child.get("name") == name
+                and child.get("connect") == connect
+            ):
+                children.remove(child)
+                return child
+
+        found = remove_base_from_groups(children, name, connect)
+        if found:
+            return found
+
+    return None
+
+
+def add_base_to_group_path(groups, group_path, base):
+    parts = group_path.split("\\")
+    current = groups
+
+    for part in parts:
+        match = next(
+            (
+                g for g in current
+                if g.get("type") == "group" and g.get("name") == part
+            ),
+            None
+        )
+
+        if not match:
+            match = {
+                "type": "group",
+                "name": part,
+                "children": []
+            }
+            current.append(match)
+
+        current = match["children"]
+
+    current.append(base)
+
+
+def move_selected_base():
+    selected = tree.focus()
+
+    if not selected or selected not in tree_nodes:
+        messagebox.showinfo("Перемещение", "Выберите базу.")
+        return
+
+    item = tree_nodes[selected]
+
+    if item.get("type") != "base":
+        messagebox.showinfo("Перемещение", "Выберите базу, а не группу.")
+        return
+
+    group_paths = collect_group_paths()
+
+    if not group_paths:
+        messagebox.showinfo("Перемещение", "Нет доступных групп.")
+        return
+
+    dialog = tk.Toplevel(root)
+    dialog.title("Переместить в группу")
+    dialog.transient(root)
+    dialog.grab_set()
+
+    center_window(root, dialog, 420, 140)
+
+    ttk.Label(dialog, text=f'База: {item.get("name", "")}').pack(anchor="w", padx=10, pady=(10, 4))
+
+    group_var = tk.StringVar(value=group_paths[0])
+
+    combo = ttk.Combobox(
+        dialog,
+        textvariable=group_var,
+        values=group_paths,
+        state="readonly"
+    )
+    combo.pack(fill="x", padx=10, pady=4)
+
+    def apply_move():
+        name = item.get("name")
+        connect = item.get("connect")
+
+        moved_base = remove_base_from_groups(starter.get("groups", []), name, connect)
+
+        if not moved_base:
+            moved_base = item.copy()
+
+        add_base_to_group_path(starter.get("groups", []), group_var.get(), moved_base)
+
+        save_json(starter)
+        populate_tree()
+        dialog.destroy()
+
+    ttk.Button(dialog, text="Переместить", command=apply_move).pack(pady=(6, 10))
+
 def show_context_menu(event):
     selected = tree.identify_row(event.y)
     if not selected:
@@ -476,6 +650,7 @@ def show_context_menu(event):
         menu.add_command(label="Добавить в избранное", command=add_to_favorites)
 
     menu.add_separator()
+    menu.add_command(label="Переместить в группу...", command=move_selected_base)
     menu.add_command(label="Свойства", command=lambda: open_properties(selected))
     menu.add_command(label="Удалить ИБ", command=delete_selected_base)
     menu.post(event.x_root, event.y_root)
@@ -594,10 +769,18 @@ def resolve_1c_path(version):
             exe_1cv8c = os.path.join(base_dir, "1cv8c.exe")
             exe_1cv8 = os.path.join(base_dir, "1cv8.exe")
 
-            if os.path.exists(exe_1cv8c):
-                return exe_1cv8c
-            if os.path.exists(exe_1cv8):
-                return exe_1cv8
+            selected_interface = interface.get()
+
+            if selected_interface == "Обычный":
+                if os.path.exists(exe_1cv8):
+                    return exe_1cv8
+                if os.path.exists(exe_1cv8c):
+                    return exe_1cv8c
+            else:
+                if os.path.exists(exe_1cv8c):
+                    return exe_1cv8c
+                if os.path.exists(exe_1cv8):
+                    return exe_1cv8
 
         return None
 
@@ -629,32 +812,73 @@ def launch_selected_base():
     if not selected or selected not in tree_nodes:
         messagebox.showinfo("Выбор", "Выберите базу")
         return
+
     base = tree_nodes[selected]
     connect = base.get("connect", "")
     version = base.get("platform", "")
+
     if not connect or not version:
         messagebox.showerror("Ошибка", "Отсутствует строка подключения или версия платформы.")
         return
+
     exe_path = resolve_1c_path(version)
     if not exe_path:
         messagebox.showerror("Ошибка", f"Не найдена исполняемая программа для платформы {version}.")
         return
+
     mode = launch_mode.get()
     connect_lower = connect.lower()
+
+    # WS
     if "ws=" in connect_lower:
         ws_url = connect.split("ws=", 1)[-1].split(";", 1)[0]
         arg = f'/WS"{ws_url}"'
+
+    # Клиент-сервер
     elif "srvr=" in connect_lower:
-        arg = f"/S{connect.replace(';','')}"
+        server_connect = connect.strip().replace('"', '')
+
+        server = ""
+        ref = ""
+
+        for part in server_connect.split(";"):
+            part = part.strip()
+
+            if part.lower().startswith("srvr="):
+                server = part.split("=", 1)[1].strip()
+
+            elif part.lower().startswith("ref="):
+                ref = part.split("=", 1)[1].strip()
+
+        if not server or not ref:
+            messagebox.showerror(
+                "Ошибка",
+                f"Не удалось разобрать серверную строку:\n{connect}"
+            )
+            return
+
+        arg = f'/S"{server}\\{ref}"'
+
+    # Файловая
     else:
-        path = connect.replace("File=", "").replace(";", "")
+        path = connect.strip()
+
+        if path.lower().startswith("file="):
+            path = path[5:]
+
+        path = path.rstrip(";").strip()
+
+        if path.startswith('"') and path.endswith('"'):
+            path = path[1:-1]
+
         arg = f'/F"{path}"'
+
     mode_flag = "ENTERPRISE"
     if mode == "configurator":
         mode_flag = "DESIGNER"
-    elif mode == "test":
-        mode_flag = "ENTERPRISE /C"
-    cmd = [exe_path] + mode_flag.split() + shlex.split(arg)
+
+    cmd = f'"{exe_path}" {mode_flag} {arg}'
+
     username = (base.get("username") or "").strip()
     password = (base.get("password") or "").strip()
 
@@ -664,26 +888,48 @@ def launch_selected_base():
         password = (auth_enterprise.get("password") or "").strip()
 
     if username:
-        cmd.append(f"/N{username}")
+        cmd += f' /N"{username}"'
+
     if password:
-        cmd.append(f"/P{password}")
+        cmd += f' /P"{password}"'
+
+    selected_interface = interface.get()
+    
+    if selected_interface == "Обычный":
+        cmd += " /RunModeOrdinaryApplication"
+    
+    if selected_interface == "Такси":
+        cmd += " /iTaxi"
+        
+    if selected_interface == "Версия 8.5":
+        cmd += " /i85"
+    
+    
     try:
-        subprocess.Popen(cmd)
+        status_var.set(cmd)
+        subprocess.Popen(cmd, shell=True)
 
         today = datetime.date.today().isoformat()
-        update_base_everywhere(base.get("name"), base.get("connect"), {"last_run": today})
+
+        update_base_everywhere(
+            base.get("name"),
+            base.get("connect"),
+            {"last_run": today}
+        )
+
         save_json(starter)
-        populate_tree()
+#        populate_tree()
 
     except Exception as e:
         messagebox.showerror("Ошибка запуска", str(e))
 
+tree.bind("<<TreeviewSelect>>", lambda e: update_status())
 tree.bind("<Button-3>", show_context_menu)
 tree.bind("<Double-1>", lambda e: launch_selected_base())
 ttk.Button(frame_right, text="Запустить", command=launch_selected_base).pack(pady=10, anchor="se")
 
 try:
-    img = Image.open(os.path.join(APP_DIR, "assets", "sin_code.png"))
+    img = Image.open(os.path.join(RESOURCE_DIR, "assets", "sin_code.png"))
     img = img.resize((180, 180), Image.Resampling.LANCZOS)
     sin_photo = ImageTk.PhotoImage(img)
     label_sin = ttk.Label(frame_right, image=sin_photo, cursor="hand2")
