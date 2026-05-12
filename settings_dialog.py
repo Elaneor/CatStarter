@@ -3,9 +3,17 @@ from tkinter import ttk, filedialog, messagebox
 import json
 import os
 import configparser
+from edit_dialog import center_window
+import sys
 
-SETTINGS_PATH = os.path.join(os.path.dirname(__file__), "settings.json")
-STARTER_JSON = os.path.join(os.path.dirname(__file__), "starter.json")
+if getattr(sys, "frozen", False):
+    APP_DIR = os.path.dirname(sys.executable)
+else:
+    APP_DIR = os.path.dirname(os.path.abspath(__file__))
+
+SETTINGS_PATH = os.path.join(APP_DIR, "settings.json")
+STARTER_JSON = os.path.join(APP_DIR, "starter.json")
+
 DEFAULT_V8I = os.path.expandvars("%APPDATA%/1C/1CEStart/ibases.v8i")
 
 def load_settings():
@@ -37,6 +45,7 @@ def parse_v8i_file(path):
         entry = config[section]
         name = entry.get("Name", section)
         connect = entry.get("Connect", "")
+        connect = connect.strip()
         folder = entry.get("Folder", "")
         platform = entry.get("Version", entry.get("DefaultVersion", ""))
         username = entry.get("Usr", "")
@@ -64,12 +73,12 @@ def parse_v8i_file(path):
             })
     return bases
 
-def open_settings_dialog(master):
+def open_settings_dialog(master, reload_callback=None):
     settings = load_settings()
 
     dialog = tk.Toplevel(master)
     dialog.title("Настройки CatStarter")
-    dialog.geometry("600x400")
+    center_window(master, dialog, 600, 400)
     dialog.grab_set()
 
     notebook = ttk.Notebook(dialog)
@@ -78,17 +87,23 @@ def open_settings_dialog(master):
     frame_import = ttk.Frame(notebook)
     notebook.add(frame_import, text="Импорт баз")
 
-    paths_var = tk.Variable(value=settings.get("v8i_paths", []))
+    paths_var = tk.StringVar(value=settings.get("v8i_paths", []))
 
     listbox = tk.Listbox(frame_import, listvariable=paths_var, height=8, selectmode="browse")
     listbox.grid(row=0, column=0, columnspan=3, sticky="nsew", padx=5, pady=5)
     frame_import.rowconfigure(0, weight=1)
     frame_import.columnconfigure(1, weight=1)
 
+    def get_paths():
+        return list(listbox.get(0, tk.END))
+
     def add_path():
-        path = filedialog.askopenfilename(title="Выберите .v8i файл", filetypes=[("v8i files", "*.v8i")])
+        path = filedialog.askopenfilename(
+            title="Выберите .v8i файл",
+            filetypes=[("v8i files", "*.v8i")]
+        )
         if path:
-            current = list(paths_var.get())
+            current = get_paths()
             if path not in current:
                 current.append(path)
                 paths_var.set(current)
@@ -97,12 +112,12 @@ def open_settings_dialog(master):
         selection = listbox.curselection()
         if selection:
             index = selection[0]
-            current = list(paths_var.get())
+            current = get_paths()
             del current[index]
             paths_var.set(current)
-
+            
     def import_now():
-        v8i_paths = list(paths_var.get())
+        v8i_paths = get_paths()
         if not v8i_paths:
             messagebox.showinfo("Импорт", "Нет выбранных файлов .v8i")
             return
@@ -111,7 +126,11 @@ def open_settings_dialog(master):
             with open(STARTER_JSON, "r", encoding="utf-8") as f:
                 starter = json.load(f)
         else:
-            starter = {"favorites": [], "groups": []}
+            starter = {
+                "favorites": [],
+                "groups": [],
+                "window_geometry": "900x600"
+            }
 
         existing_connects = set()
 
@@ -128,14 +147,33 @@ def open_settings_dialog(master):
             if not folder_path or folder_path.strip() in ["/", "\\"]:
                 groups.append(base)
                 return
+
             parts = folder_path.split("\\") if "\\" in folder_path else folder_path.split("/")
             current = groups
+
             for part in parts:
-                match = next((g for g in current if g["type"] == "group" and g["name"] == part), None)
+                part = part.strip()
+                if not part:
+                    continue
+
+                match = next(
+                    (
+                        g for g in current
+                        if g.get("type") == "group" and g.get("name") == part
+                    ),
+                    None
+                )
+
                 if not match:
-                    match = {"type": "group", "name": part, "children": []}
+                    match = {
+                        "type": "group",
+                        "name": part,
+                        "children": []
+                    }
                     current.append(match)
+
                 current = match["children"]
+
             current.append(base)
 
         added_count = 0
@@ -147,7 +185,22 @@ def open_settings_dialog(master):
                 for b in imported:
                     if b["connect"] in existing_connects:
                         continue
-                    base_entry = b
+                    base_entry = {
+                        "type": "base",
+                        "name": b.get("name", ""),
+                        "platform": b.get("platform", ""),
+                        "connect": b.get("connect", ""),
+                        "parameters": b.get("parameters", ""),
+                        "interface": b.get("interface", "Auto"),
+                        "username": b.get("username", ""),
+                        "password": b.get("password", ""),
+                        "auth_mode": b.get("auth_mode", "auto"),
+                        "auth_os": b.get("auth_os", False),
+                        "auth_enterprise": b.get("auth_enterprise", {"username": "", "password": ""}),
+                        "auth_designer": b.get("auth_designer", {"username": "", "password": ""}),
+                        "last_run": "",
+                        "size": ""
+                    }
                     if not starter.get("groups"):
                         starter["groups"] = []
                     v8i_group = next((g for g in starter["groups"] if g.get("name") == "🗂 Импорт из .v8i"), None)
@@ -165,6 +218,9 @@ def open_settings_dialog(master):
 
         messagebox.showinfo("Импорт завершён", f"Импортировано баз: {added_count}")
 
+        if reload_callback:
+            reload_callback()
+    
     ttk.Button(frame_import, text="Добавить", command=add_path).grid(row=1, column=0, sticky="ew", padx=5, pady=5)
     ttk.Button(frame_import, text="Удалить", command=remove_path).grid(row=1, column=1, sticky="ew", padx=5, pady=5)
     ttk.Button(frame_import, text="Импортировать сейчас", command=import_now).grid(row=1, column=2, sticky="ew", padx=5, pady=5)
@@ -173,7 +229,7 @@ def open_settings_dialog(master):
     button_frame.pack(fill="x", padx=10, pady=(0, 10))
 
     def save_and_close():
-        settings["v8i_paths"] = list(paths_var.get())
+        settings["v8i_paths"] = get_paths()
         save_settings(settings)
         dialog.destroy()
 
