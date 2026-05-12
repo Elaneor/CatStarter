@@ -34,7 +34,7 @@ python main.py
 
 ## 🧱 Сборка EXE (через PyInstaller)
 ```bash
-pyinstaller --noconsole --onefile --icon=assets/cat.ico main.py
+pyinstaller --clean --noconfirm --onedir --windowed --name CatStarter --paths "C:\Projects\CatStarter" --icon=assets\cat.ico --add-data "assets;assets" --hidden-import=settings_dialog --hidden-import=edit_dialog --hidden-import=tkinter.filedialog --hidden-import=tkinter.messagebox main.py
 ```
 Файл cat.ico должен находиться в папке assets.
 
