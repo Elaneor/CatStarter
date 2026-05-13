@@ -4,6 +4,7 @@ import json
 import tkinter as tk
 from tkinter import ttk, messagebox
 import os
+import pyperclip
 import subprocess
 import sys
 import uuid
@@ -107,8 +108,11 @@ icon_version = load_icon("version.png")
 search_var = tk.StringVar()
 search_entry = ttk.Entry(toolbar, textvariable=search_var)
 search_entry.pack(side="left", fill="x", expand=True, padx=(0, 5))
-SEARCH_PLACEHOLDER = "\U0001F50D Поиск..."
+SEARCH_PLACEHOLDER = "🔍 Ctrl+F"
 search_var.set(SEARCH_PLACEHOLDER)
+
+version_filter_var = tk.StringVar(value="")
+filter_button_text = tk.StringVar(value="8.x")
 
 def clear_search_placeholder(event=None):
     if search_var.get() == SEARCH_PLACEHOLDER:
@@ -119,36 +123,40 @@ search_entry.bind("<FocusIn>", clear_search_placeholder)
 btn_create = ttk.Button(
     toolbar,
     image=icon_create,
-    text="Создать",
-    compound="left",
+    width=3,
     command=lambda: open_register_dialog(root, on_register_save)
 )
 
-btn_duplicate = ttk.Button(
+ToolTip(btn_create, "Создать базу")
+
+btn_filter = ttk.Button(
     toolbar,
-    image=icon_copy,
-    text="Копия",
-    compound="left"
+    textvariable=filter_button_text,
+    width=4,
+    command=lambda: open_platform_filter_dialog()
 )
+
+ToolTip(btn_filter, "Отбор по версии платформы")
 
 btn_group = ttk.Button(
     toolbar,
     image=icon_group,
-    text="Группа",
-    compound="left"
+    width=3
 )
+ToolTip(btn_group, "Создать группу")
 
 btn_create.pack(side="left", padx=2)
-btn_duplicate.pack(side="left", padx=2)
+btn_filter.pack(side="left", padx=2)
 btn_group.pack(side="left", padx=2)
 
 btn_settings = ttk.Button(
     toolbar,
     image=icon_settings,
-    text="Настройки",
-    compound="left",
+    width=3,
     command=lambda: open_settings_dialog(root, reload_data)
 )
+ToolTip(btn_settings, "Настройки")
+
 btn_settings.pack(side="left", padx=2)
 
 # Дерево баз
@@ -160,32 +168,69 @@ tree.heading("last_run", text="Дата")
 tree.heading("size", text="Размер")
 tree.pack(fill="both", expand=True)
 
-status_var = tk.StringVar(value="")
+status_name_var = tk.StringVar(value="")
+status_connect_var = tk.StringVar(value="")
+status_cmd_var = tk.StringVar(value="")
 
-status_label = ttk.Label(
-    frame_left,
-    textvariable=status_var,
-    anchor="w"
+status_frame = ttk.Frame(frame_left)
+status_frame.pack(fill="x", pady=(4, 0))
+
+status_name_label = ttk.Label(
+    status_frame,
+    textvariable=status_name_var,
+    anchor="w",
+    font=("Segoe UI", 10, "bold")
 )
 
-status_label.pack(fill="x", pady=(4, 0))
+status_name_label.pack(fill="x")
+
+status_connect_label = ttk.Label(
+    status_frame,
+    textvariable=status_connect_var,
+    anchor="w",
+    foreground="#666666"
+)
+
+status_connect_label.pack(fill="x")
+
+status_cmd_label = ttk.Label(
+    status_frame,
+    textvariable=status_cmd_var,
+    anchor="w",
+    foreground="#888888"
+)
+
+status_cmd_label.pack(fill="x")
+
+def copy_launch_command():
+    cmd = status_cmd_var.get().strip()
+
+    if not cmd:
+        return
+
+    pyperclip.copy(cmd)
+
+copy_cmd_button = ttk.Button(
+    status_frame,
+    text="Копировать команду",
+    command=copy_launch_command
+)
+
+copy_cmd_button.pack(anchor="e", pady=(2, 0))
 
 def update_status():
     selected = tree.focus()
 
     if not selected or selected not in tree_nodes:
-        status_var.set("")
+        status_name_var.set("")
+        status_connect_var.set("")
         return
 
     base = tree_nodes[selected]
 
-    text = (
-        f'{base.get("name", "")} | '
-        f'{base.get("platform", "")} | '
-        f'{base.get("connect", "")}'
-    )
-
-    status_var.set(text)
+    status_name_var.set(base.get("name", ""))
+    status_connect_var.set(base.get("connect", ""))
+    status_cmd_var.set("")
 
 # Поиск по Enter
 def perform_search(event=None):
@@ -254,6 +299,10 @@ search_entry.bind("<F3>", find_next)
 # Ctrl+F → фокус в поиск
 def focus_search(event=None):
     search_entry.focus()
+
+    if search_var.get() == SEARCH_PLACEHOLDER:
+        search_var.set("")
+
     search_entry.select_range(0, 'end')
     return "break"
 
@@ -263,11 +312,93 @@ root.bind("<Control-F>", focus_search)
 # F5 → перезагрузка данных
 def reload_data():
     global starter, favorites
+
+    current_open_nodes = get_open_nodes()
+    
     starter = load_json()
+    starter["open_nodes"] = current_open_nodes
     favorites = starter.get("favorites", [])
+
+    def refresh_sizes(nodes):
+        for node in nodes:
+            if node.get("type") == "group":
+                refresh_sizes(node.get("children", []))
+
+            elif node.get("type") == "base":
+                connect = node.get("connect", "").strip()
+
+                if connect.lower().startswith("file="):
+                    path = connect[5:]
+                    path = path.rstrip(";").strip()
+
+                    if path.startswith('"') and path.endswith('"'):
+                        path = path[1:-1]
+
+                    today = datetime.date.today().isoformat()
+
+                    if node.get("size_updated") == today:
+                        continue
+                        
+                    db_file = os.path.join(path, "1Cv8.1CD")
+
+                    if os.path.exists(db_file):
+                        size_value = format_size(os.path.getsize(db_file))
+                    else:
+                        size_value = ""
+
+                    node["size"] = size_value
+                    node["size_updated"] = today
+
+    refresh_sizes(starter.get("groups", []))
+    refresh_sizes(starter.get("favorites", []))
+
+    save_json(starter)
     populate_tree()
 
 root.bind("<F5>", lambda e: reload_data())
+
+def rename_selected_group():
+    selected = tree.focus()
+
+    if not selected or selected not in tree_nodes:
+        return
+
+    item = tree_nodes[selected]
+
+    if item.get("type") != "group":
+        return
+
+    current_name = item.get("name", "")
+
+    dialog = tk.Toplevel(root)
+    dialog.title("Переименовать группу")
+    dialog.transient(root)
+    dialog.grab_set()
+
+    center_window(root, dialog, 320, 120)
+
+    ttk.Label(dialog, text="Новое имя группы:").pack(anchor="w", padx=10, pady=(10, 4))
+
+    name_var = tk.StringVar(value=current_name)
+
+    entry = ttk.Entry(dialog, textvariable=name_var)
+    entry.pack(fill="x", padx=10, pady=4)
+    entry.focus_set()
+
+    def apply():
+        new_name = name_var.get().strip()
+
+        if not new_name:
+            return
+
+        item["name"] = new_name
+
+        starter["open_nodes"] = get_open_nodes()
+        save_json(starter)
+        populate_tree()
+        dialog.destroy()
+
+    ttk.Button(dialog, text="Переименовать", command=apply).pack(pady=(6, 10))
 
 # Home → вернуться в начало списка
 def go_home(event=None):
@@ -297,7 +428,10 @@ def delete_selected_base():
     name = base.get("name")
     connect = base.get("connect")
 
-    if not messagebox.askyesno("Подтверждение", f"Удалить базу «{name}»?"):
+    if not messagebox.askyesno(
+        "Подтверждение",
+        f"Удалить базу «{name}» из списка?\n\nФайлы базы на диске удалены не будут."
+    ):
         return
 
     # Удаляем из favorites
@@ -323,34 +457,64 @@ def delete_selected_base():
 btn_delete = ttk.Button(
     toolbar,
     image=icon_delete,
-    text="Удалить",
-    compound="left",
+    width=3,
     command=delete_selected_base
 )
-btn_delete.pack(side="left", padx=2)
+ToolTip(btn_delete, "Удалить базу из списка")
 
 # Меню режимов запуска
 menu_bar = ttk.Frame(frame_right)
 menu_bar.pack(anchor="ne", pady=2, padx=2)
 
-def create_menu_button(master, label, options):
-    btn = ttk.Menubutton(master, text=label, direction="below")
-    menu = tk.Menu(btn, tearoff=0)
-    for name in options:
-        menu.add_command(label=name)
-    btn["menu"] = menu
-    btn.pack(anchor="ne", pady=2, padx=2)
-    return btn
+def create_launch_button(master, label, mode):
+    frame = ttk.Frame(master)
+    frame.pack(anchor="ne", pady=2, padx=2)
 
-create_menu_button(menu_bar, "1С:Предприятие", ["Авто", "Обычный", "Толстый", "Тонкий"])
-create_menu_button(menu_bar, "Конфигуратор", ["Стандартный", "С параметрами..."])
+    def open_menu(event):
+        menu.tk_popup(event.x_root, event.y_root)
+
+    btn = ttk.Button(
+        frame,
+        text=label,
+        command=lambda: launch_selected_base(mode)
+    )
+
+    btn.pack(side="left")
+
+    arrow = ttk.Button(
+        frame,
+        text="▼",
+        width=2
+    )
+
+    arrow.pack(side="left", padx=(2, 0))
+
+    menu = tk.Menu(root, tearoff=0)
+
+    menu.add_command(
+        label="Запустить с выбором параметров",
+        command=lambda: open_launch_params_dialog(mode)
+    )
+
+    menu.add_command(
+        label="Запустить с аутентификацией",
+        command=lambda: open_launch_params_dialog(mode, force_auth=True)
+    )
+
+    menu.add_command(
+        label="Запустить от имени администратора",
+        command=lambda: launch_selected_base(mode, run_as_admin=True)
+)
+
+    arrow.bind("<Button-1>", open_menu)
+
+    return frame
+create_launch_button(menu_bar, "1С:Предприятие", "enterprise")
+create_launch_button(menu_bar, "Конфигуратор", "configurator")
 
 param_frame = ttk.LabelFrame(frame_right, text="Параметры запуска")
 param_frame.pack(fill="x", pady=(10, 5))
 
-launch_mode = tk.StringVar(value="enterprise")
-for text, val in [("Предприятие", "enterprise"), ("Конфигуратор", "configurator")]:
-    ttk.Radiobutton(param_frame, text=text, variable=launch_mode, value=val).pack(anchor="w")
 
 ttklab = ttk.Label(param_frame, text="Интерфейс:")
 ttklab.pack(anchor="w", pady=(10, 0))
@@ -368,8 +532,23 @@ def save_window_geometry():
     starter["window_geometry"] = root.geometry()
     save_json(starter)
 
+def get_open_nodes():
+    open_names = []
+
+    def walk(parent=""):
+        for iid in tree.get_children(parent):
+            if tree.item(iid, "open"):
+                text = tree.item(iid, "text")
+                open_names.append(text)
+            walk(iid)
+
+    walk()
+    return open_names
+
 def on_close():
-    save_window_geometry()
+    starter["window_geometry"] = root.geometry()
+    starter["open_nodes"] = get_open_nodes()
+    save_json(starter)
     root.destroy()
 
 def load_json():
@@ -385,6 +564,34 @@ def load_json():
 def save_json(data):
     with open(STARTER_JSON, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=4)
+
+def format_size(size_bytes):
+    for unit in ["Б", "КБ", "МБ", "ГБ", "ТБ"]:
+        if size_bytes < 1024:
+            return f"{size_bytes:.1f} {unit}"
+
+        size_bytes /= 1024
+
+    return f"{size_bytes:.1f} ПБ"
+
+
+def calculate_folder_size(path):
+    total = 0
+
+    try:
+        for root_dir, dirs, files in os.walk(path):
+            for file in files:
+                file_path = os.path.join(root_dir, file)
+
+                try:
+                    total += os.path.getsize(file_path)
+                except Exception:
+                    pass
+
+    except Exception:
+        return ""
+
+    return format_size(total)
 
 def ensure_id(item):
     if not item.get("id"):
@@ -403,26 +610,319 @@ def insert_item(parent, item):
     tree_nodes[iid] = item
     tree.insert(parent, "end", iid=iid, text=item["name"], values=values)
 
-def insert_children(parent, children):
+def base_matches_filter(item):
+    selected_version = version_filter_var.get()
+
+    if not selected_version:
+        return True
+
+    platform = item.get("platform", "")
+    return platform.startswith(selected_version)
+
+
+def group_has_visible_bases(children):
     for child in children:
+        if child.get("type") == "base" and base_matches_filter(child):
+            return True
+
         if child.get("type") == "group":
-            gid = tree.insert(parent, "end", text=child["name"], open=True)
+            if group_has_visible_bases(child.get("children", [])):
+                return True
+
+    return False
+
+def insert_children(parent, children):
+    sorted_children = sorted(
+        children,
+        key=lambda x: (
+            x.get("type") != "group",
+            not x.get("name", "").startswith("_"),
+            x.get("name", "").lower()
+        )
+    )
+
+    for child in sorted_children:
+        if child.get("type") == "group":
+            if not group_has_visible_bases(child.get("children", [])):
+                continue
+
+            open_nodes = starter.get("open_nodes", [])
+            gid = tree.insert(parent, "end", text=child["name"], open=child["name"] in open_nodes)
+            tree_nodes[gid] = child
             insert_children(gid, child.get("children", []))
+
         elif child.get("type") == "base":
-            insert_item(parent, child)
+            if base_matches_filter(child):
+                insert_item(parent, child)
+
+def open_launch_params_dialog(mode="enterprise", force_auth=False):
+    selected = tree.focus()
+
+    if not selected or selected not in tree_nodes:
+        messagebox.showinfo("Выбор", "Выберите базу")
+        return
+
+    base = tree_nodes[selected]
+
+    if base.get("type") != "base":
+        messagebox.showinfo("Выбор", "Выберите базу")
+        return
+
+    mode_title = "1С:Предприятие" if mode == "enterprise" else "Конфигуратор"
+
+    dialog = tk.Toplevel(root)
+    dialog.title(f"Параметры запуска {mode_title}")
+    dialog.transient(root)
+    dialog.grab_set()
+
+    center_window(root, dialog, 620, 520)
+
+    ttk.Label(
+        dialog,
+        text=base.get("name", ""),
+        font=("Segoe UI", 10, "bold")
+    ).pack(anchor="w", padx=10, pady=(10, 6))
+
+    ttk.Separator(dialog).pack(fill="x", pady=(0, 8))
+
+    ttk.Label(dialog, text="Строка параметров").pack(anchor="w", padx=10)
+
+    params_var = tk.StringVar(value=base.get("parameters", ""))
+    
+    entry_params = ttk.Entry(dialog, textvariable=params_var)
+    entry_params.pack(fill="x", padx=10, pady=(2, 8))
+    
+    if force_auth:
+        dialog.after(100, entry_params.focus_set)
+    
+    entry_params.bind("<Control-v>", lambda e: entry_params.event_generate("<<Paste>>"))
+    entry_params.bind("<Control-V>", lambda e: entry_params.event_generate("<<Paste>>"))
+
+    entry_params.bind("<Control-c>", lambda e: entry_params.event_generate("<<Copy>>"))
+    entry_params.bind("<Control-C>", lambda e: entry_params.event_generate("<<Copy>>"))
+
+    entry_params.bind("<Control-x>", lambda e: entry_params.event_generate("<<Cut>>"))
+    entry_params.bind("<Control-X>", lambda e: entry_params.event_generate("<<Cut>>"))
+
+    table_frame = ttk.Frame(dialog)
+    table_frame.pack(fill="both", expand=True, padx=10)
+
+    columns = ("param", "mode", "description")
+
+    params_tree = ttk.Treeview(
+        table_frame,
+        columns=columns,
+        show="headings",
+        height=10
+    )
+
+    params_tree.heading("param", text="Параметр")
+    params_tree.heading("mode", text="Режим")
+    params_tree.heading("description", text="Описание параметра")
+
+    params_tree.column("param", width=150, stretch=False)
+    params_tree.column("mode", width=110, stretch=False)
+    params_tree.column("description", width=330, stretch=True)
+
+    params_tree.pack(side="left", fill="both", expand=True)
+
+    scrollbar = ttk.Scrollbar(table_frame, orient="vertical", command=params_tree.yview)
+    params_tree.configure(yscrollcommand=scrollbar.set)
+    scrollbar.pack(side="right", fill="y")
+
+    known_params = [
+        ("UC", "Оба", "Обход блокировки сеанса"),
+        ("ClearCache", "Оба", "Очистка кэша клиент-серверных вызовов"),
+        ("DisableStartupMessages", "Оба", "Подавление стартовых сообщений"),
+        ("AllowExecuteScheduledJobs -Off", "Предприятие", "Не запускать регламентные задания"),
+        ("AllowExecuteScheduledJobs -On", "Предприятие", "Выполнять регламентные задания"),
+        ("/Len", "Оба", "Использование английского интерфейса"),
+        ("LogUI", "Оба", "Логирование действий пользователя"),
+        ("UseHwLicenses+", "Оба", "Поиск локального ключа защиты выполняется"),
+        ("UseHwLicenses-", "Оба", "Поиск локального ключа защиты не выполняется"),
+        ("Out", "Оба", "Установка файла для вывода служебных сообщений"),
+        ("DumpConfigToFiles", "Конфигуратор", "Выгрузка конфигурации в файлы"),
+        ("LoadConfigFromFiles", "Конфигуратор", "Загрузка конфигурации из файлов"),
+        ("UpdateDBCfg", "Конфигуратор", "Обновление конфигурации базы данных")
+    ]
+
+    allowed_mode = "Предприятие" if mode == "enterprise" else "Конфигуратор"
+
+    for param, param_mode, desc in known_params:
+        if param_mode in ("Оба", allowed_mode):
+            params_tree.insert("", "end", values=(param, param_mode, desc))
+
+    def add_selected_param():
+        selected_param = params_tree.focus()
+        if not selected_param:
+            return
+
+        values = params_tree.item(selected_param, "values")
+        if not values:
+            return
+
+        param = values[0]
+        current = params_var.get().strip()
+
+        if param not in current:
+            params_var.set((current + " " + param).strip())
+
+    def edit_params():
+        entry_params.focus_set()
+
+    def clear_params():
+        params_var.set("")
+
+    params_tree.bind("<Double-1>", lambda e: add_selected_param())
+
+    params_button_frame = ttk.Frame(dialog)
+    params_button_frame.pack(fill="x", padx=10, pady=(6, 6))
+
+    ttk.Button(params_button_frame, text="Добавить", command=add_selected_param).pack(side="left")
+    ttk.Button(params_button_frame, text="Редактировать", command=edit_params).pack(side="left", padx=(6, 0))
+    ttk.Button(params_button_frame, text="Очистить", command=clear_params).pack(side="left", padx=(6, 0))
+
+    ttk.Separator(dialog).pack(fill="x", pady=(4, 8))
+
+    run_as_admin_var = tk.BooleanVar(value=False)
+    use_version_var = tk.BooleanVar(value=False)
+
+    ttk.Checkbutton(
+        dialog,
+        text="Запустить от имени администратора",
+        variable=run_as_admin_var
+    ).pack(anchor="w", padx=10, pady=2)
+
+    processing_frame = ttk.Frame(dialog)
+    processing_frame.pack(fill="x", padx=10, pady=2)
+
+    processing_var = tk.BooleanVar(value=False)
+
+    ttk.Checkbutton(
+        processing_frame,
+        text="Запустить обработку:",
+        variable=processing_var,
+        state="disabled"
+    ).pack(side="left")
+
+    processing_entry = ttk.Entry(processing_frame, state="disabled")
+    processing_entry.pack(side="left", fill="x", expand=True, padx=(6, 0))
+
+    version_frame = ttk.Frame(dialog)
+    version_frame.pack(fill="x", padx=10, pady=(8, 4))
+
+    ttk.Checkbutton(
+        version_frame,
+        text="Использовать версию:",
+        variable=use_version_var
+    ).pack(side="left")
+
+    versions = get_installed_1c_versions()
+    version_var = tk.StringVar(value=base.get("platform", ""))
+
+    version_combo = ttk.Combobox(
+        version_frame,
+        textvariable=version_var,
+        values=versions,
+        state="readonly",
+        width=18
+    )
+    version_combo.pack(side="left", padx=(6, 0))
+
+    bottom = ttk.Frame(dialog)
+    bottom.pack(fill="x", padx=10, pady=(8, 10))
+
+    def continue_launch():
+        forced_version = version_var.get().strip() if use_version_var.get() else ""
+
+        launch_selected_base(
+            mode=mode,
+            extra_params=params_var.get().strip(),
+            run_as_admin=run_as_admin_var.get(),
+            forced_version=forced_version
+        )
+
+        dialog.after(100, dialog.destroy)
+
+    ttk.Button(bottom, text="Отмена", command=dialog.destroy).pack(side="right")
+    ttk.Button(bottom, text="Продолжить", command=continue_launch).pack(side="right", padx=(0, 8))
 
 def populate_tree():
     tree_nodes.clear()
     tree.delete(*tree.get_children())
 
-    tree.insert("", "end", iid="favorites", text="★ Избранное", open=True)
+    open_nodes = starter.get("open_nodes", [])
+    tree.insert("", "end", iid="favorites", text="★ Избранное", open="★ Избранное" in open_nodes)
 
     for fav in favorites:
-        insert_item("favorites", fav)
+        if base_matches_filter(fav):
+            insert_item("favorites", fav)
 
-    for group in starter.get("groups", []):
-        gid = tree.insert("", "end", text=group["name"], open=True)
+    sorted_groups = sorted(
+        starter.get("groups", []),
+        key=lambda x: (
+            not x.get("name", "").startswith("_"),
+            x.get("name", "").lower()
+        )
+    )
+
+    for group in sorted_groups:
+        if not group_has_visible_bases(group.get("children", [])):
+            continue
+
+        gid = tree.insert("", "end", text=group["name"], open=group["name"] in open_nodes)
+        tree_nodes[gid] = group
         insert_children(gid, group.get("children", []))
+
+def open_platform_filter_dialog():
+    dialog = tk.Toplevel(root)
+    dialog.title("Отбор по версии платформы")
+    dialog.transient(root)
+    dialog.grab_set()
+
+    center_window(root, dialog, 260, 160)
+
+    selected = tk.StringVar(value=version_filter_var.get() or "8.5")
+
+    options = [
+        ("1С:Предприятие 8.5", "8.5"),
+        ("1С:Предприятие 8.3", "8.3"),
+        ("1С:Предприятие 8.2", "8.2")
+    ]
+
+    for index, (text, value) in enumerate(options):
+        ttk.Radiobutton(
+            dialog,
+            text=text,
+            variable=selected,
+            value=value
+        ).pack(
+            anchor="w",
+            padx=14,
+            pady=(10, 0) if index == 0 else (2, 0)
+        )
+
+    button_frame = ttk.Frame(dialog)
+    button_frame.pack(fill="x", padx=10, pady=(12, 10))
+
+    def apply_filter():
+        value = selected.get()
+        starter["open_nodes"] = get_open_nodes()
+        version_filter_var.set(value)
+        filter_button_text.set(value)
+        populate_tree()
+        dialog.destroy()
+
+    def clear_filter():
+        starter["open_nodes"] = get_open_nodes()
+        version_filter_var.set("")
+        filter_button_text.set("8.x")
+        populate_tree()
+        dialog.destroy()
+
+    ttk.Button(button_frame, text="Отмена", command=dialog.destroy).pack(side="left")
+    ttk.Button(button_frame, text="Без отбора", command=clear_filter).pack(side="right")
+    ttk.Button(button_frame, text="Применить", command=apply_filter).pack(side="right", padx=(0, 5))
 
 def on_register_save(result):
     base_entry = {
@@ -612,6 +1112,7 @@ def move_selected_base():
 
         add_base_to_group_path(starter.get("groups", []), group_var.get(), moved_base)
 
+        starter["open_nodes"] = get_open_nodes()
         save_json(starter)
         populate_tree()
         dialog.destroy()
@@ -632,6 +1133,13 @@ def show_context_menu(event):
 
     menu = tk.Menu(root, tearoff=0)
 
+    # Контекстное меню группы
+    if item.get("type") == "group":
+        menu.add_command(label="Переименовать группу...", command=rename_selected_group)
+        menu.post(event.x_root, event.y_root)
+        return
+
+    # Контекстное меню базы
     if tree.parent(selected) == "favorites":
         def remove():
             favorites[:] = [
@@ -652,7 +1160,7 @@ def show_context_menu(event):
     menu.add_separator()
     menu.add_command(label="Переместить в группу...", command=move_selected_base)
     menu.add_command(label="Свойства", command=lambda: open_properties(selected))
-    menu.add_command(label="Удалить ИБ", command=delete_selected_base)
+    menu.add_command(label="Удалить из списка", command=delete_selected_base)
     menu.post(event.x_root, event.y_root)
 
 def get_installed_1c_versions():
@@ -743,10 +1251,10 @@ def assign_platform_to_selected():
 btn_platform = ttk.Button(
     toolbar,
     image=icon_version,
-    text="Версия",
-    compound="left",
+    width=3,
     command=assign_platform_to_selected
 )
+ToolTip(btn_platform, "Назначить версию платформы")
 btn_platform.pack(side="left", padx=2) 
 
 toolbar.icons = [
@@ -782,6 +1290,7 @@ def resolve_1c_path(version):
                 if os.path.exists(exe_1cv8):
                     return exe_1cv8
 
+
         return None
 
     # 1. Сначала ищем точную версию
@@ -807,7 +1316,7 @@ def resolve_1c_path(version):
 
     return None
             
-def launch_selected_base():
+def launch_selected_base(mode="enterprise", extra_params="", run_as_admin=False, forced_version=""):
     selected = tree.focus()
     if not selected or selected not in tree_nodes:
         messagebox.showinfo("Выбор", "Выберите базу")
@@ -815,7 +1324,7 @@ def launch_selected_base():
 
     base = tree_nodes[selected]
     connect = base.get("connect", "")
-    version = base.get("platform", "")
+    version = forced_version or base.get("platform", "")
 
     if not connect or not version:
         messagebox.showerror("Ошибка", "Отсутствует строка подключения или версия платформы.")
@@ -826,12 +1335,16 @@ def launch_selected_base():
         messagebox.showerror("Ошибка", f"Не найдена исполняемая программа для платформы {version}.")
         return
 
-    mode = launch_mode.get()
     connect_lower = connect.lower()
 
     # WS
     if "ws=" in connect_lower:
-        ws_url = connect.split("ws=", 1)[-1].split(";", 1)[0]
+        ws_url = connect.split("=", 1)[1]
+        ws_url = ws_url.rstrip(";").strip()
+
+        if ws_url.startswith('"') and ws_url.endswith('"'):
+            ws_url = ws_url[1:-1]
+
         arg = f'/WS"{ws_url}"'
 
     # Клиент-сервер
@@ -872,6 +1385,7 @@ def launch_selected_base():
             path = path[1:-1]
 
         arg = f'/F"{path}"'
+  
 
     mode_flag = "ENTERPRISE"
     if mode == "configurator":
@@ -904,10 +1418,25 @@ def launch_selected_base():
     if selected_interface == "Версия 8.5":
         cmd += " /i85"
     
+    if extra_params:
+        cmd += f" {extra_params}"
     
     try:
-        status_var.set(cmd)
-        subprocess.Popen(cmd, shell=True)
+        # status_var.set(cmd)
+        status_cmd_var.set(cmd)
+        if run_as_admin:
+            args = cmd.replace(f'"{exe_path}" ', "", 1)
+
+            ctypes.windll.shell32.ShellExecuteW(
+                None,
+                "runas",
+                exe_path,
+                args,
+                None,
+                1
+            )
+        else:
+            subprocess.Popen(cmd, shell=True)
 
         today = datetime.date.today().isoformat()
 
@@ -926,7 +1455,6 @@ def launch_selected_base():
 tree.bind("<<TreeviewSelect>>", lambda e: update_status())
 tree.bind("<Button-3>", show_context_menu)
 tree.bind("<Double-1>", lambda e: launch_selected_base())
-ttk.Button(frame_right, text="Запустить", command=launch_selected_base).pack(pady=10, anchor="se")
 
 try:
     img = Image.open(os.path.join(RESOURCE_DIR, "assets", "sin_code.png"))
