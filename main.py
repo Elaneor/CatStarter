@@ -106,8 +106,13 @@ icon_delete = load_icon("delete.png")
 icon_version = load_icon("version.png")
 
 search_var = tk.StringVar()
-search_entry = ttk.Entry(toolbar, textvariable=search_var)
-search_entry.pack(side="left", fill="x", expand=True, padx=(0, 5))
+search_entry = ttk.Entry(
+    toolbar,
+    textvariable=search_var,
+    width=24
+)
+
+search_entry.pack(side="left", padx=(0, 5))
 SEARCH_PLACEHOLDER = "🔍 Ctrl+F"
 search_var.set(SEARCH_PLACEHOLDER)
 
@@ -184,14 +189,17 @@ status_name_label = ttk.Label(
 
 status_name_label.pack(fill="x")
 
+connect_frame = ttk.Frame(status_frame)
+connect_frame.pack(fill="x")
+
 status_connect_label = ttk.Label(
-    status_frame,
+    connect_frame,
     textvariable=status_connect_var,
     anchor="w",
     foreground="#666666"
 )
 
-status_connect_label.pack(fill="x")
+status_connect_label.pack(side="left", fill="x", expand=True)
 
 status_cmd_label = ttk.Label(
     status_frame,
@@ -201,6 +209,44 @@ status_cmd_label = ttk.Label(
 )
 
 status_cmd_label.pack(fill="x")
+
+# считает базы в большом узле
+def count_bases(nodes):
+    total = 0
+
+    for node in nodes:
+        if node.get("type") == "base":
+            if base_matches_filter(node):
+                total += 1
+
+        elif node.get("type") == "group":
+            total += count_bases(node.get("children", []))
+
+    return total
+
+
+def copy_connect_string():
+    value = status_connect_var.get().strip()
+
+    if not value:
+        return "break"
+
+    root.clipboard_clear()
+    root.clipboard_append(value)
+    root.update_idletasks()
+
+    return "break"
+
+btn_copy_connect = ttk.Button(
+    connect_frame,
+    text="📋",
+    width=3
+)
+
+btn_copy_connect.bind("<Button-1>", lambda e: copy_connect_string())
+
+btn_copy_connect.pack(side="right", padx=(4, 0))
+ToolTip(btn_copy_connect, "Копировать строку подключения")
 
 def copy_launch_command():
     cmd = status_cmd_var.get().strip()
@@ -218,6 +264,31 @@ copy_cmd_button = ttk.Button(
 
 copy_cmd_button.pack(anchor="e", pady=(2, 0))
 
+# сохраняем ширину колонок списка
+def save_column_widths():
+    starter["column_widths"] = {
+        "#0": tree.column("#0", "width"),
+        "platform": tree.column("platform", "width"),
+        "last_run": tree.column("last_run", "width"),
+        "size": tree.column("size", "width")
+    }
+
+# функция загружает ширину колонок списка
+def load_column_widths():
+    widths = starter.get("column_widths", {})
+
+    if "#0" in widths:
+        tree.column("#0", width=widths["#0"])
+
+    if "platform" in widths:
+        tree.column("platform", width=widths["platform"])
+
+    if "last_run" in widths:
+        tree.column("last_run", width=widths["last_run"])
+
+    if "size" in widths:
+        tree.column("size", width=widths["size"])
+        
 def update_status():
     selected = tree.focus()
 
@@ -548,6 +619,9 @@ def get_open_nodes():
 def on_close():
     starter["window_geometry"] = root.geometry()
     starter["open_nodes"] = get_open_nodes()
+
+    save_column_widths()
+
     save_json(starter)
     root.destroy()
 
@@ -852,7 +926,17 @@ def populate_tree():
     tree.delete(*tree.get_children())
 
     open_nodes = starter.get("open_nodes", [])
-    tree.insert("", "end", iid="favorites", text="★ Избранное", open="★ Избранное" in open_nodes)
+    favorites_count = count_bases(favorites)
+
+    favorites_title = f"★ Избранное ({favorites_count})"
+
+    tree.insert(
+        "",
+        "end",
+        iid="favorites",
+        text=favorites_title,
+        open="★ Избранное" in open_nodes
+    )
 
     for fav in favorites:
         if base_matches_filter(fav):
@@ -935,16 +1019,48 @@ def on_register_save(result):
         "username": result.get("username", ""),
         "password": result.get("password", ""),
         "auth_enterprise": result.get("auth_enterprise", {
-        "username": result.get("username", ""),
-        "password": result.get("password", "")
-    }),
+            "username": result.get("username", ""),
+            "password": result.get("password", "")
+        }),
         "last_run": "",
         "size": ""
     }
-    if starter.get("groups"):
-        starter["groups"][0]["children"].append(base_entry)
+
+    selected = tree.focus()
+    target_group = None
+
+    if selected and selected in tree_nodes:
+        selected_item = tree_nodes[selected]
+
+        if selected_item.get("type") == "group":
+            target_group = selected_item
+
+        elif selected_item.get("type") == "base":
+            parent_id = tree.parent(selected)
+
+            if parent_id and parent_id in tree_nodes:
+                parent_item = tree_nodes[parent_id]
+
+                if parent_item.get("type") == "group":
+                    target_group = parent_item
+
+    if target_group is not None:
+        target_group.setdefault("children", []).append(base_entry)
+
+    elif starter.get("groups"):
+        starter["groups"][0].setdefault("children", []).append(base_entry)
+
     else:
-        starter["groups"] = [{"name": "Информационные базы", "type": "group", "children": [base_entry]}]
+        starter["groups"] = [
+            {
+                "name": "Информационные базы",
+                "type": "group",
+                "children": [base_entry]
+            }
+        ]
+
+    starter["open_nodes"] = get_open_nodes()
+
     save_json(starter)
     populate_tree()
 
@@ -962,8 +1078,11 @@ def add_to_favorites():
             and f.get("connect") == item.get("connect")
             for f in favorites
         ):
+
             favorites.append(item.copy())
             starter["favorites"] = favorites
+            starter["open_nodes"] = get_open_nodes()
+
             save_json(starter)
             populate_tree()
 
@@ -1471,5 +1590,6 @@ starter = load_json()
 root.geometry(load_window_geometry())
 favorites = starter.get("favorites", [])
 populate_tree()
+load_column_widths()
 root.protocol("WM_DELETE_WINDOW", on_close)
 root.mainloop()
