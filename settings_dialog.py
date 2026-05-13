@@ -13,7 +13,7 @@ else:
 
 SETTINGS_PATH = os.path.join(APP_DIR, "settings.json")
 STARTER_JSON = os.path.join(APP_DIR, "starter.json")
-
+MAIN_GROUP_NAME = "ИНФОРМАЦИОННЫЕ БАЗЫ"
 DEFAULT_V8I = os.path.expandvars("%APPDATA%/1C/1CEStart/ibases.v8i")
 
 def load_settings():
@@ -203,9 +203,9 @@ def open_settings_dialog(master, reload_callback=None):
                     }
                     if not starter.get("groups"):
                         starter["groups"] = []
-                    v8i_group = next((g for g in starter["groups"] if g.get("name") == "🗂 Импорт из .v8i"), None)
+                    v8i_group = next((g for g in starter["groups"] if g.get("name") == MAIN_GROUP_NAME), None)
                     if not v8i_group:
-                        v8i_group = {"type": "group", "name": "🗂 Импорт из .v8i", "children": []}
+                        v8i_group = {"type": "group", "name": MAIN_GROUP_NAME, "children": []}
                         starter["groups"].append(v8i_group)
                     add_to_group_path(v8i_group["children"], b.get("folder", ""), base_entry)
                     existing_connects.add(b["connect"])
