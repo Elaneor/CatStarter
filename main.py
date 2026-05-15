@@ -1940,6 +1940,10 @@ def launch_selected_base(mode="enterprise", extra_params="", run_as_admin=False,
         return
 
     base = tree_nodes[selected]
+    
+    base_run_as_admin = base.get("run_as_admin", False)
+    run_as_admin = run_as_admin or base_run_as_admin
+    
     connect = base.get("connect", "")
     version = forced_version or base.get("platform", "")
 
