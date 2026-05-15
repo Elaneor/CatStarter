@@ -55,6 +55,19 @@ def open_properties_dialog(master, data, on_save):
 
     frame_general = ttk.Frame(notebook)
     notebook.add(frame_general, text="1. Сведения")
+    frame_general.columnconfigure(1, weight=1)
+
+    frame_connection = ttk.Frame(notebook)
+    notebook.add(frame_connection, text="2. Подключение")
+    frame_connection.columnconfigure(1, weight=1)
+
+    frame_auth = ttk.Frame(notebook)
+    notebook.add(frame_auth, text="3. Аутентификация")
+    frame_auth.columnconfigure(1, weight=1)
+
+    frame_launch = ttk.Frame(notebook)
+    notebook.add(frame_launch, text="4. Параметры запуска")
+    frame_launch.columnconfigure(1, weight=1)
 
     ttk.Label(frame_general, text="Наименование:").grid(row=0, column=0, sticky="w", pady=2)
     entry_name = ttk.Entry(frame_general)
@@ -71,48 +84,55 @@ def open_properties_dialog(master, data, on_save):
 
     enable_ctrl_v(entry_platform)
 
-    ttk.Label(frame_general, text="Подключение:").grid(row=2, column=0, sticky="w", pady=2)
-    entry_connect = ttk.Entry(frame_general)
-    entry_connect.grid(row=2, column=1, pady=2, sticky="ew")
+    ttk.Label(frame_connection, text="Подключение:").grid(row=0, column=0, sticky="w", pady=2)
+    entry_connect = ttk.Entry(frame_connection)
+    entry_connect.grid(row=0, column=1, pady=2, sticky="ew")
     entry_connect.insert(0, data.get("connect", ""))
     enable_ctrl_v(entry_connect)
 
-    ttk.Label(frame_general, text="Параметры запуска:").grid(row=3, column=0, sticky="w", pady=2)
-    entry_params = ttk.Entry(frame_general)
-    entry_params.grid(row=3, column=1, pady=2, sticky="ew")
-    entry_params.insert(0, data.get("parameters", ""))
-    enable_ctrl_v(entry_params)
-
-    ttk.Label(frame_general, text="Интерфейс:").grid(row=4, column=0, sticky="w", pady=2)
+    ttk.Label(frame_general, text="Интерфейс:").grid(row=2, column=0, sticky="w", pady=2)
     combo_interface = ttk.Combobox(frame_general, values=["Auto", "Версия 8.5", "Такси", "Обычный"], state="readonly")
-    combo_interface.grid(row=4, column=1, pady=2, sticky="ew")
+    combo_interface.grid(row=2, column=1, pady=2, sticky="ew")
     combo_interface.set(data.get("interface", "Auto"))
 
-    ttk.Label(frame_general, text="Имя пользователя:").grid(row=5, column=0, sticky="w", pady=2)
-    entry_username = ttk.Entry(frame_general)
-    entry_username.grid(row=5, column=1, pady=2, sticky="ew")
-    entry_username.insert(0, data.get("username", ""))
-    enable_ctrl_v(entry_username)
-
-    ttk.Label(frame_general, text="Пароль:").grid(row=6, column=0, sticky="w", pady=2)
-    entry_password = ttk.Entry(frame_general, show="*")
-    entry_password.grid(row=6, column=1, pady=2, sticky="ew")
-    entry_password.insert(0, data.get("password", ""))
-    enable_ctrl_v(entry_password)
-
-    ttk.Label(frame_general, text="Дата последнего запуска:").grid(row=7, column=0, sticky="w", pady=2)
+    ttk.Label(frame_general, text="Дата последнего запуска:").grid(row=3, column=0, sticky="w", pady=2)
     entry_last_run = ttk.Entry(frame_general)
-    entry_last_run.grid(row=7, column=1, pady=2, sticky="ew")
+    entry_last_run.grid(row=3, column=1, pady=2, sticky="ew")
     entry_last_run.insert(0, data.get("last_run", ""))
     enable_ctrl_v(entry_last_run)
 
-    frame_general.columnconfigure(1, weight=1)
+    ttk.Label(frame_auth, text="Имя пользователя:").grid(row=0, column=0, sticky="w", pady=2)
+    entry_username = ttk.Entry(frame_auth)
+    entry_username.grid(row=0, column=1, pady=2, sticky="ew")
+    entry_username.insert(0, data.get("username", ""))
+    enable_ctrl_v(entry_username)
+
+    ttk.Label(frame_auth, text="Пароль:").grid(row=1, column=0, sticky="w", pady=2)
+    entry_password = ttk.Entry(frame_auth, show="*")
+    entry_password.grid(row=1, column=1, pady=2, sticky="ew")
+    entry_password.insert(0, data.get("password", ""))
+    enable_ctrl_v(entry_password)
+
+    ttk.Label(frame_launch, text="Параметры запуска:").grid(row=0, column=0, sticky="w", pady=2)
+    entry_params = ttk.Entry(frame_launch)
+    entry_params.grid(row=0, column=1, pady=2, sticky="ew")
+    entry_params.insert(0, data.get("parameters", ""))
+    enable_ctrl_v(entry_params)
+
+    run_as_admin_var = tk.BooleanVar(value=data.get("run_as_admin", False))
+
+    ttk.Checkbutton(
+        frame_launch,
+        text="Запуск от имени администратора",
+        variable=run_as_admin_var
+    ).grid(row=1, column=1, sticky="w", pady=2)
 
     def save():
         data["name"] = entry_name.get()
         data["platform"] = entry_platform.get()
         data["connect"] = entry_connect.get()
         data["parameters"] = entry_params.get()
+        data["run_as_admin"] = run_as_admin_var.get()
         data["interface"] = combo_interface.get()
         data["username"] = entry_username.get()
         data["password"] = entry_password.get()
@@ -127,7 +147,7 @@ def open_properties_dialog(master, data, on_save):
     btn_save = ttk.Button(dialog, text="Сохранить", command=save)
     btn_save.pack(pady=(0, 10))
     
-    center_window(master, dialog, 520, 360)
+    center_window(master, dialog, 520, 390)
 
 
 def open_register_dialog(master, on_register):
