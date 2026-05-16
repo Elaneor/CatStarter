@@ -699,6 +699,36 @@ def go_home(event=None):
 
 root.bind("<Home>", go_home)
 
+# определяем путь для стандартного Стартера
+def resolve_1c_starter_path():
+    candidates = [
+        os.path.expandvars(r"%PROGRAMFILES%\1cv8\common\1cestart.exe"),
+        os.path.expandvars(r"%PROGRAMFILES(x86)%\1cv8\common\1cestart.exe"),
+        os.path.expandvars(r"%LOCALAPPDATA%\Programs\1cv8\common\1cestart.exe"),
+        os.path.expandvars(r"%LOCALAPPDATA%\Programs\1cv8_x86\common\1cestart.exe"),
+        os.path.expandvars(r"%LOCALAPPDATA%\Programs\1cv8_x64\common\1cestart.exe"),
+    ]
+
+    for path in candidates:
+        if os.path.exists(path):
+            return path
+
+    return None
+
+
+def launch_1c_starter():
+    starter_path = resolve_1c_starter_path()
+
+    if not starter_path:
+        messagebox.showerror(
+            "Ошибка",
+            "Не найден штатный стартер 1С.\n\n"
+            "Проверьте каталог common в Program Files или LOCALAPPDATA."
+        )
+        return
+
+    subprocess.Popen([starter_path])
+
 
 def delete_selected_base():
     selected = tree.focus()
@@ -748,28 +778,37 @@ ToolTip(btn_delete, "Удалить базу из списка")
 menu_bar = ttk.Frame(frame_right)
 menu_bar.pack(anchor="ne", pady=2, padx=2)
 
-def create_launch_button(master, label, mode):
-    frame = ttk.Frame(master)
-    frame.pack(anchor="ne", pady=2, padx=2)
+menu_bar.columnconfigure(0, minsize=110)
+menu_bar.columnconfigure(1, minsize=24)
 
+# Иконка для стартера
+starter_icon = None
+
+try:
+    img_starter = Image.open(os.path.join(RESOURCE_DIR, "assets", "icons", "1c_starter.png"))
+    img_starter = img_starter.resize((18, 18), Image.Resampling.LANCZOS)
+    starter_icon = ImageTk.PhotoImage(img_starter)
+except Exception as e:
+    print(f"Иконка штатного стартера не загрузилась: {e}")
+
+
+def create_launch_button(master, row, label, mode):
     def open_menu(event):
         menu.tk_popup(event.x_root, event.y_root)
 
     btn = ttk.Button(
-        frame,
+        master,
         text=label,
         command=lambda: launch_selected_base(mode)
     )
-
-    btn.pack(side="left")
+    btn.grid(row=row, column=0, sticky="ew", pady=2)
 
     arrow = ttk.Button(
-        frame,
+        master,
         text="▼",
         width=2
     )
-
-    arrow.pack(side="left", padx=(2, 0))
+    arrow.grid(row=row, column=1, sticky="ew", padx=(2, 0), pady=2)
 
     menu = tk.Menu(root, tearoff=0)
 
@@ -786,17 +825,28 @@ def create_launch_button(master, label, mode):
     menu.add_command(
         label="Запустить от имени администратора",
         command=lambda: launch_selected_base(mode, run_as_admin=True)
-)
+    )
 
     arrow.bind("<Button-1>", open_menu)
 
-    return frame
-create_launch_button(menu_bar, "1С:Предприятие", "enterprise")
-create_launch_button(menu_bar, "Конфигуратор", "configurator")
+    return btn, arrow
+
+
+create_launch_button(menu_bar, 0, "1С:Предприятие", "enterprise")
+create_launch_button(menu_bar, 1, "Конфигуратор", "configurator")
+
+btn_starter = ttk.Button(
+    menu_bar,
+    text="1С:Стартер",
+    image=starter_icon,
+    compound="left",
+    command=launch_1c_starter
+)
+btn_starter.image = starter_icon
+btn_starter.grid(row=2, column=0, columnspan=2, sticky="ew", pady=2)
 
 param_frame = ttk.LabelFrame(frame_right, text="Параметры запуска")
 param_frame.pack(fill="x", pady=(10, 5))
-
 
 ttklab = ttk.Label(param_frame, text="Интерфейс:")
 ttklab.pack(anchor="w", pady=(10, 0))
@@ -1876,60 +1926,6 @@ toolbar.icons = [
     icon_version
 ]
 
-def resolve_1c_path(version, mode="enterprise"):
-    print("resolve mode:", mode)
-    def find_exe(ver):
-        base_dirs = [
-            os.path.join(os.environ.get("PROGRAMFILES", "C:\\Program Files"), "1cv8", ver, "bin"),
-            os.path.join(os.environ.get("PROGRAMFILES(X86)", "C:\\Program Files (x86)"), "1cv8", ver, "bin")
-        ]
-
-        for base_dir in base_dirs:
-            exe_1cv8c = os.path.join(base_dir, "1cv8c.exe")
-            exe_1cv8 = os.path.join(base_dir, "1cv8.exe")
-
-            selected_interface = interface.get()
-
-            if mode == "configurator":
-                if os.path.exists(exe_1cv8):
-                    return exe_1cv8
-                continue
-
-            if selected_interface == "Обычный":
-                if os.path.exists(exe_1cv8):
-                    return exe_1cv8
-
-            else:
-                if os.path.exists(exe_1cv8c):
-                    return exe_1cv8c
-
-                if os.path.exists(exe_1cv8):
-                    return exe_1cv8
-
-        return None
-
-    # 1. Сначала ищем точную версию
-    exact = find_exe(version)
-    if exact:
-        return exact
-
-    # 2. Если точной нет, ищем ближайшую установленную того же семейства
-    # Например, для 8.5.1.536 подойдет 8.5.4.1253
-    parts = version.split(".")
-    if len(parts) >= 2:
-        family = ".".join(parts[:2])
-        installed_versions = get_installed_1c_versions()
-
-        family_versions = [
-            v for v in installed_versions
-            if v.startswith(family + ".")
-        ]
-
-        if family_versions:
-            fallback = family_versions[0]
-            return find_exe(fallback)
-
-    return None
    
 # Запуск выбранной информационной базы   
 def launch_selected_base(mode="enterprise", extra_params="", run_as_admin=False, forced_version=""):
