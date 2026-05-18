@@ -4,8 +4,21 @@ from tkinter import ttk
 import datetime
 
 def enable_ctrl_v(widget):
-    widget.bind("<Control-v>", lambda e: widget.event_generate("<<Paste>>"))
-    widget.bind("<Control-V>", lambda e: widget.event_generate("<<Paste>>"))
+    def paste_event(event=None):
+        try:
+            widget.insert(tk.INSERT, widget.clipboard_get())
+        except tk.TclError:
+            pass
+        return "break"
+
+    def on_keypress(event):
+        # Ctrl + физическая клавиша V на Windows.
+        # Работает и на русской раскладке, где V вводит "м".
+        if event.state & 0x4 and event.keycode == 86:
+            return paste_event(event)
+        return None
+
+    widget.bind("<KeyPress>", on_keypress, add="+")
 
 def center_window(parent, window, width=500, height=400):
     parent.update_idletasks()
