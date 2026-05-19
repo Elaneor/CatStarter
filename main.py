@@ -1759,6 +1759,7 @@ def show_context_menu(event):
     if item.get("type") == "group":
         if len(current_selection) == 1:
             menu.add_command(label="Переименовать группу...", command=rename_selected_group)
+            menu.add_command(label="Свойства...", command=open_selected_properties)
             menu.add_command(label="Удалить группу...", command=delete_selected_group)
 
         menu.add_command(label="Переместить в группу...", command=move_selected_nodes)
@@ -1785,7 +1786,7 @@ def show_context_menu(event):
 
     menu.add_separator()
     menu.add_command(label="Переместить в группу...", command=move_selected_nodes)
-    menu.add_command(label="Свойства", command=lambda: open_properties(selected))
+    menu.add_command(label="Свойства...", command=open_selected_properties)
     menu.add_command(label="Удалить из списка", command=delete_selected_base)
     menu.post(event.x_root, event.y_root)
 
@@ -1844,6 +1845,34 @@ def get_installed_1c_versions():
                 versions.append(name)
 
     return sorted(set(versions), reverse=True)
+
+def resolve_1c_path(version, mode="enterprise"):
+    base_dirs = [
+        os.path.join(os.environ.get("PROGRAMFILES", r"C:\Program Files"), "1cv8", version, "bin"),
+        os.path.join(os.environ.get("PROGRAMFILES(X86)", r"C:\Program Files (x86)"), "1cv8", version, "bin")
+    ]
+
+    for base_dir in base_dirs:
+        exe_1cv8 = os.path.join(base_dir, "1cv8.exe")
+        exe_1cv8c = os.path.join(base_dir, "1cv8c.exe")
+
+        if mode == "configurator":
+            if os.path.exists(exe_1cv8):
+                return exe_1cv8
+            continue
+
+        selected_interface = interface.get()
+
+        if selected_interface == "Обычный":
+            if os.path.exists(exe_1cv8):
+                return exe_1cv8
+        else:
+            if os.path.exists(exe_1cv8c):
+                return exe_1cv8c
+            if os.path.exists(exe_1cv8):
+                return exe_1cv8
+
+    return None
 
 def collect_bases_from_node(item_id):
     result = []
@@ -1926,16 +1955,58 @@ toolbar.icons = [
     icon_version
 ]
 
+# Открыть свойства выбранного элемента дерева
+def open_selected_properties():
+    selected = get_selected_tree_item()
+
+    if not selected:
+        messagebox.showinfo("Свойства", "Выберите базу или группу.")
+        return
+
+    item = tree_nodes.get(selected)
+
+    if not item:
+        messagebox.showinfo("Свойства", "Выберите базу или группу.")
+        return
+
+    if item.get("type") == "base":
+        open_properties(selected)
+        return
+
+    if item.get("type") == "group":
+        rename_selected_group()
+        return
+        
+# Получить выбранный элемент дерева
+def get_selected_tree_item():
+    selected = tree.focus()
+
+    if selected and selected in tree_nodes:
+        return selected
+
+    selection = tree.selection()
+
+    if selection:
+        selected = selection[0]
+
+        if selected in tree_nodes:
+            return selected
+
+    return ""
    
 # Запуск выбранной информационной базы   
 def launch_selected_base(mode="enterprise", extra_params="", run_as_admin=False, forced_version=""):
-    print("launch mode:", mode)
-    selected = tree.focus()
-    if not selected or selected not in tree_nodes:
+    selected = get_selected_tree_item()
+
+    if not selected:
         messagebox.showinfo("Выбор", "Выберите базу")
         return
 
     base = tree_nodes[selected]
+
+    if base.get("type") != "base":
+        messagebox.showinfo("Выбор", "Выберите базу")
+        return
     
     base_run_as_admin = base.get("run_as_admin", False)
     run_as_admin = run_as_admin or base_run_as_admin
