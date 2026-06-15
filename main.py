@@ -2208,9 +2208,13 @@ except Exception as e:
 
 
 starter = load_json()
+
+
+
 commands_data = load_commands()
 root.geometry(load_window_geometry())
 favorites = starter.get("favorites", [])
+
 populate_tree()
 populate_commands_tree()
 load_column_widths()
