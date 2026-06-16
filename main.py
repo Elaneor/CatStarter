@@ -15,8 +15,21 @@ from edit_dialog import (
     open_properties_dialog,
     center_window
 )
-from settings_dialog import open_settings_dialog
+from settings_dialog import (
+    open_settings_dialog,
+    load_settings,
+    import_v8i_into_starter
+)
+
 from command_dialog import open_command_dialog
+from v8i_utils import (
+    update_local_v8i_field,
+    update_local_v8i_folder_path,
+    add_local_v8i_empty_group,
+    normalize_path,
+    DEFAULT_V8I
+)
+
 
 class ToolTip:
     def __init__(self, widget, text):
@@ -85,6 +98,15 @@ if os.path.exists(icon_path):
 
 root.geometry("900x600")
 
+# заменяем все значки окон на Сина
+def apply_window_icon(window):
+    try:
+        window.iconbitmap(
+            os.path.join(RESOURCE_DIR, "assets", "cat.ico")
+        )
+    except Exception as e:
+        print(f"Ошибка установки иконки: {e}")
+
 # Правая часть — панель запуска и Син
 frame_right_container = tk.Frame(root, width=240)
 frame_right_container.pack(side="right", fill="y")
@@ -127,10 +149,32 @@ def clear_search_placeholder(event=None):
 
 search_entry.bind("<FocusIn>", clear_search_placeholder)
 
+
+def get_group_path(item_id):
+    parts = []
+
+    current = item_id
+
+    while current:
+        item = tree_nodes.get(current)
+
+        if item and item.get("type") == "group":
+            name = item.get("name", "")
+
+            if name and name != "Информационные базы":
+                parts.append(name)
+
+        current = tree.parent(current)
+
+    parts.reverse()
+    return "/".join(parts)
+
+
 # добавление группы
 def create_group():
     dialog = tk.Toplevel(root)
     dialog.title("Создать группу")
+    apply_window_icon(dialog)
     dialog.grab_set()
     dialog.resizable(False, False)
 
@@ -153,7 +197,15 @@ def create_group():
             "children": []
         }
 
+        parent_folder = ""
+
         selected = tree.focus()
+        if selected in tree_nodes and tree_nodes[selected].get("type") == "group":
+            parent_folder = get_group_path(selected)
+
+        created_in_v8i = add_local_v8i_empty_group(name, parent_folder)
+        print("GROUP CREATED IN V8I:", created_in_v8i, name, parent_folder) 
+
         if selected in tree_nodes and tree_nodes[selected].get("type") == "group":
             tree_nodes[selected].setdefault("children", []).append(new_group)
         elif starter.get("groups"):
@@ -166,6 +218,8 @@ def create_group():
             }]
 
         save_json(starter)
+        auto_import_v8i_on_start()
+        favorites = starter.get("favorites", [])
         populate_tree()
         dialog.destroy()
 
@@ -271,7 +325,7 @@ btn_command_delete.pack(side="left", padx=2)
 # Дерево команд
 commands_tree = ttk.Treeview(
     commands_tab,
-    columns=("command_type", "command"),
+    columns=("command",),
     show="tree headings",
     selectmode="browse"
 )
@@ -280,7 +334,7 @@ commands_tree.heading("#0", text="Наименование")
 commands_tree.heading("command", text="Команда")
 
 commands_tree.column("#0", width=220)
-commands_tree.column("command", width=420)
+commands_tree.column("command", width=520)
 
 commands_tree.pack(fill="both", expand=True)
 
@@ -654,6 +708,7 @@ def rename_selected_group():
 
     dialog = tk.Toplevel(root)
     dialog.title("Переименовать группу")
+    apply_window_icon(dialog)
     dialog.transient(root)
     dialog.grab_set()
 
@@ -906,6 +961,20 @@ def save_json(data):
     with open(STARTER_JSON, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=4)
 
+# функции для автообновления баз из списков инфобаз
+def auto_import_v8i_on_start():
+    settings = load_settings()
+    v8i_paths = settings.get("v8i_paths", [])
+
+    if not v8i_paths:
+        return
+
+    try:
+        import_v8i_into_starter(starter, v8i_paths)
+        save_json(starter)
+    except Exception as e:
+        print(f"Автоимпорт v8i не выполнен: {e}")
+
 # Загрузка списка команд для вкладки "Команды"
 def load_commands():
     if not os.path.exists(COMMANDS_JSON):
@@ -955,12 +1024,25 @@ def ensure_id(item):
 
 def insert_item(parent, item):
     base_id = ensure_id(item)
-    iid = base_id
 
     if parent == "favorites":
-        iid = f"fav_{base_id}"
+        iid_base = f"fav_{base_id}"
+    else:
+        iid_base = f"base_{base_id}"
 
-    values = (item.get("platform", ""), item.get("last_run", ""), item.get("size", ""))
+    iid = iid_base
+    counter = 1
+
+    while iid in tree_nodes or tree.exists(iid):
+        counter += 1
+        iid = f"{iid_base}_{counter}"
+
+    values = (
+        item.get("platform", ""),
+        item.get("last_run", ""),
+        item.get("size", "")
+    )
+
     tree_nodes[iid] = item
     tree.insert(parent, "end", iid=iid, text=item["name"], values=values)
 
@@ -1031,6 +1113,7 @@ def open_launch_params_dialog(mode="enterprise", force_auth=False):
 
     dialog = tk.Toplevel(root)
     dialog.title(f"Параметры запуска {mode_title}")
+    apply_window_icon(dialog)
     dialog.transient(root)
     dialog.grab_set()
 
@@ -1367,6 +1450,7 @@ def create_command():
 def open_platform_filter_dialog():
     dialog = tk.Toplevel(root)
     dialog.title("Отбор по версии платформы")
+    apply_window_icon(dialog)
     dialog.transient(root)
     dialog.grab_set()
 
@@ -1516,6 +1600,16 @@ def open_properties(item_id):
 
         update_base_everywhere(old_name, old_connect, new_data)
 
+        selected_version = new_data.get("platform", "").strip()
+
+        if selected_version:
+            if normalize_path(item.get("source_v8i", "")) == normalize_path(DEFAULT_V8I):
+                update_local_v8i_field(
+                    old_connect,
+                    "DefaultVersion",
+                    selected_version
+                )
+
         save_json(starter)
         populate_tree()
 
@@ -1655,6 +1749,7 @@ def move_selected_nodes():
 
     dialog = tk.Toplevel(root)
     dialog.title("Переместить в группу")
+    apply_window_icon(dialog)
     dialog.transient(root)
     dialog.grab_set()
 
@@ -1700,7 +1795,26 @@ def move_selected_nodes():
                 moved.append(removed)
 
         target_group.setdefault("children", []).extend(moved)
+        
+        target_folder = target_path.replace("\\", "/")
 
+        if target_folder.startswith("Информационные базы/"):
+            target_folder = target_folder[len("Информационные базы/"):]
+
+        elif target_folder == "Информационные базы":
+            target_folder = ""
+
+        target_folder_value = f"/{target_folder}" if target_folder else "/"
+
+        for moved_item in moved:
+            if moved_item.get("type") == "base":
+                if normalize_path(moved_item.get("source_v8i", "")) == normalize_path(DEFAULT_V8I):
+                    update_local_v8i_field(
+                        moved_item.get("connect", ""),
+                        "Folder",
+                        target_folder_value
+                    )
+        
         starter["open_nodes"] = get_open_nodes()
         starter["open_nodes"].append(target_id)
 
@@ -1887,6 +2001,7 @@ def collect_bases_from_node(item_id):
 
     return result
 
+# назначение версии платформы для выбранной базы / группы баз
 def assign_platform_to_selected():
     selected = tree.focus()
     if not selected:
@@ -1903,26 +2018,145 @@ def assign_platform_to_selected():
         messagebox.showerror("Версия платформы", "Установленные версии платформы не найдены.")
         return
 
+    versions_tree = {}
+
+    for version in versions:
+        parts = version.split(".")
+
+        if len(parts) >= 3:
+            edition = f"{parts[0]}.{parts[1]}"
+            platform_version = f"{parts[0]}.{parts[1]}.{parts[2]}"
+        elif len(parts) >= 2:
+            edition = f"{parts[0]}.{parts[1]}"
+            platform_version = version
+        else:
+            edition = version
+            platform_version = version
+
+        versions_tree.setdefault(edition, {})
+        versions_tree[edition].setdefault(platform_version, [])
+        versions_tree[edition][platform_version].append(version)
+
+    preferred_editions = ["8.5", "8.3", "8.2"]
+    edition_values = [
+        edition for edition in preferred_editions
+        if edition in versions_tree
+    ]
+
+    for edition in sorted(versions_tree.keys(), reverse=True):
+        if edition not in edition_values:
+            edition_values.append(edition)
+
     dialog = tk.Toplevel(root)
     dialog.title("Назначить версию платформы")
+    apply_window_icon(dialog)
     dialog.transient(root)
     dialog.grab_set()
     dialog.lift()
     dialog.focus_force()
 
-    center_window(root, dialog, 320, 140)
+    center_window(root, dialog, 440, 360)
 
-    ttk.Label(dialog, text=f"Баз будет обновлено: {len(bases)}").pack(anchor="w", padx=10, pady=(10, 4))
+    ttk.Label(
+        dialog,
+        text=f"Баз будет обновлено: {len(bases)}"
+    ).pack(anchor="w", padx=10, pady=(10, 4))
 
-    platform_var = tk.StringVar(value=versions[0])
-    combo = ttk.Combobox(dialog, textvariable=platform_var, values=versions, state="readonly", width=25)
-    combo.pack(fill="x", padx=10, pady=4)
-    combo.focus_set()
+    frame_edition = ttk.LabelFrame(dialog, text="Редакция платформы")
+    frame_edition.pack(fill="x", padx=10, pady=(6, 4))
+
+    edition_var = tk.StringVar(value=edition_values[0])
+
+    frame_platform_version = ttk.LabelFrame(dialog, text="Версия платформы")
+    frame_platform_version.pack(fill="x", padx=10, pady=(6, 4))
+
+    platform_version_var = tk.StringVar()
+
+    platform_version_combo = ttk.Combobox(
+        frame_platform_version,
+        textvariable=platform_version_var,
+        state="readonly"
+    )
+    platform_version_combo.pack(fill="x", padx=6, pady=6)
+
+    frame_build = ttk.LabelFrame(dialog, text="Установленные сборки")
+    frame_build.pack(fill="both", expand=True, padx=10, pady=(6, 4))
+
+    build_listbox = tk.Listbox(
+        frame_build,
+        height=7,
+        exportselection=False
+    )
+    build_listbox.pack(side="left", fill="both", expand=True, padx=(6, 0), pady=6)
+
+    scrollbar = ttk.Scrollbar(
+        frame_build,
+        orient="vertical",
+        command=build_listbox.yview
+    )
+    scrollbar.pack(side="right", fill="y", padx=(0, 6), pady=6)
+
+    build_listbox.configure(yscrollcommand=scrollbar.set)
+
+    def refresh_builds(event=None):
+        build_listbox.delete(0, tk.END)
+
+        current_edition = edition_var.get()
+        current_platform_version = platform_version_var.get()
+
+        builds = versions_tree.get(current_edition, {}).get(current_platform_version, [])
+
+        builds = sorted(builds, reverse=True)
+
+        for build in builds:
+            build_listbox.insert(tk.END, build)
+
+        if builds:
+            build_listbox.selection_set(0)
+            build_listbox.focus_set()
+
+    def refresh_platform_versions():
+        current_edition = edition_var.get()
+
+        platform_versions = sorted(
+            versions_tree.get(current_edition, {}).keys(),
+            reverse=True
+        )
+
+        platform_version_combo["values"] = platform_versions
+
+        if platform_versions:
+            platform_version_var.set(platform_versions[0])
+        else:
+            platform_version_var.set("")
+
+        refresh_builds()
+
+    for edition in edition_values:
+        ttk.Radiobutton(
+            frame_edition,
+            text=edition,
+            variable=edition_var,
+            value=edition,
+            command=refresh_platform_versions
+        ).pack(side="left", padx=8, pady=6)
+
+    platform_version_combo.bind("<<ComboboxSelected>>", refresh_builds)
+
+    def get_selected_version():
+        selection = build_listbox.curselection()
+        if not selection:
+            return ""
+
+        return build_listbox.get(selection[0]).strip()
 
     def apply_version():
-        selected_version = platform_var.get().strip()
+        selected_version = get_selected_version()
         if not selected_version:
+            messagebox.showinfo("Версия платформы", "Выберите сборку платформы.")
             return
+
+        local_updated = 0
 
         for base in bases:
             update_base_everywhere(
@@ -1931,11 +2165,43 @@ def assign_platform_to_selected():
                 {"platform": selected_version}
             )
 
+            if normalize_path(base.get("source_v8i", "")) == normalize_path(DEFAULT_V8I):
+                if update_local_v8i_field(
+                    base.get("connect", ""),
+                    "DefaultVersion",
+                    selected_version
+                ):
+                    local_updated += 1
+
         save_json(starter)
         populate_tree()
         dialog.destroy()
 
-    ttk.Button(dialog, text="Назначить", command=apply_version).pack(pady=(6, 10))
+        if local_updated:
+            messagebox.showinfo(
+                "Версия платформы",
+                f"Версия назначена.\nОбновлено записей в локальном ibases.v8i: {local_updated}"
+            )
+
+    button_frame = ttk.Frame(dialog)
+    button_frame.pack(fill="x", padx=10, pady=(4, 10))
+
+    ttk.Button(
+        button_frame,
+        text="Отмена",
+        command=dialog.destroy
+    ).pack(side="right")
+
+    ttk.Button(
+        button_frame,
+        text="Назначить",
+        command=apply_version
+    ).pack(side="right", padx=(0, 6))
+
+    build_listbox.bind("<Double-1>", lambda e: apply_version())
+
+    refresh_platform_versions()
+
 
 btn_platform = ttk.Button(
     toolbar,
@@ -2158,6 +2424,7 @@ def launch_selected_command():
     command = item.get("command", "").strip()
     parameters = item.get("parameters", "").strip()
     workdir = item.get("workdir", "").strip()
+    command_type = item.get("command_type", "").strip()
 
     if not command:
         messagebox.showerror(
@@ -2166,15 +2433,24 @@ def launch_selected_command():
         )
         return
 
+    if command_type == "url" or command.lower().startswith(("http://", "https://")):
+        webbrowser.open(command)
+        return
+
     cmd = f'"{command}"'
 
     if parameters:
         cmd += f" {parameters}"
 
+    launch_cwd = workdir
+
+    if not launch_cwd and os.path.exists(command):
+        launch_cwd = os.path.dirname(command)
+
     try:
         subprocess.Popen(
             cmd,
-            cwd=workdir if workdir else None,
+            cwd=launch_cwd if launch_cwd else None,
             shell=True
         )
 
@@ -2208,8 +2484,7 @@ except Exception as e:
 
 
 starter = load_json()
-
-
+auto_import_v8i_on_start()
 
 commands_data = load_commands()
 root.geometry(load_window_geometry())
