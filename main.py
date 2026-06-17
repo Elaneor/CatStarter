@@ -9,7 +9,7 @@ import subprocess
 import sys
 import uuid
 import webbrowser
-from PIL import Image, ImageTk
+from PIL import Image, ImageTk, ImageDraw
 from edit_dialog import (
     open_register_dialog,
     open_properties_dialog,
@@ -25,7 +25,9 @@ from command_dialog import open_command_dialog
 from v8i_utils import (
     update_local_v8i_field,
     update_local_v8i_folder_path,
+    delete_local_v8i_empty_group,
     add_local_v8i_empty_group,
+    rename_local_v8i_empty_group,
     normalize_path,
     DEFAULT_V8I
 )
@@ -80,6 +82,54 @@ def load_icon(name, size=(18, 18)):
     img = Image.open(path).resize(size, Image.Resampling.LANCZOS)
     return ImageTk.PhotoImage(img)
 
+
+# функции для отображения иконок баз по источнику и типу подключения
+def make_base_icon(color, size=(18, 12)):
+    img = Image.new("RGBA", size, (0, 0, 0, 0))
+    draw = ImageDraw.Draw(img)
+
+    draw.rectangle((1, 3, size[0] - 2, size[1] - 3), fill=color)
+
+    return ImageTk.PhotoImage(img)
+
+
+def get_base_source(item):
+    source = (item.get("source") or "").lower()
+    source_v8i = item.get("source_v8i", "")
+
+    if source in ("external", "shared", "v8i"):
+        return "external"
+
+    if source_v8i:
+        return "external"
+
+    return "local"
+
+
+def get_connect_type(connect):
+    connect = (connect or "").strip().lower()
+
+    if connect.startswith("srvr=") or "srvr=" in connect:
+        return "sql"
+
+    if (
+        connect.startswith("ws=")
+        or connect.startswith("/ws")
+        or connect.startswith("http://")
+        or connect.startswith("https://")
+    ):
+        return "ws"
+
+    return "file"
+
+
+def get_base_icon_key(item):
+    source = get_base_source(item)
+    connect_type = get_connect_type(item.get("connect", ""))
+
+    return f"{source}_{connect_type}"
+
+
 STARTER_JSON = os.path.join(APP_DIR, "starter.json")
 COMMANDS_JSON = os.path.join(APP_DIR, "commands.json")
 
@@ -128,6 +178,16 @@ icon_group = load_icon("folder.png")
 icon_settings = load_icon("settings.png")
 icon_delete = load_icon("delete.png")
 icon_version = load_icon("version.png")
+BASE_ICONS = {
+    "local_file": make_base_icon("#D9822B"),
+    "local_sql": make_base_icon("#D9822B"),
+    "local_ws": make_base_icon("#D9822B"),
+
+    "external_file": make_base_icon("#2F80C0"),
+    "external_sql": make_base_icon("#2F80C0"),
+    "external_ws": make_base_icon("#2F80C0"),
+}
+root.base_icons = BASE_ICONS
 
 search_var = tk.StringVar()
 search_entry = ttk.Entry(
@@ -287,9 +347,12 @@ tree = ttk.Treeview(
 )
 
 tree.heading("#0", text="Наименование")
+tree.column("#0", width=360)
+
 tree.heading("platform", text="Платформа")
 tree.heading("last_run", text="Дата")
 tree.heading("size", text="Размер")
+
 tree.pack(fill="both", expand=True)
 
 # Панель инструментов для команд
@@ -628,8 +691,16 @@ def find_next(event=None):
     return "break"
 
 
-root.bind("<F3>", find_next)
 search_entry.bind("<F3>", find_next)
+
+root.bind("<F3>", lambda e: launch_selected_base("enterprise"))
+root.bind("<F4>", lambda e: launch_selected_base("configurator"))
+
+root.bind("<Shift-F3>", lambda e: open_launch_params_dialog("enterprise", force_auth=True))
+root.bind("<Shift-F4>", lambda e: open_launch_params_dialog("configurator", force_auth=True))
+
+root.bind("<Control-F3>", lambda e: open_launch_params_dialog("enterprise"))
+root.bind("<Control-F4>", lambda e: open_launch_params_dialog("configurator"))
 
 
 # Ctrl+F → фокус в поиск
@@ -705,6 +776,7 @@ def rename_selected_group():
         return
 
     current_name = item.get("name", "")
+    old_path = get_group_path(selected)
 
     dialog = tk.Toplevel(root)
     dialog.title("Переименовать группу")
@@ -728,15 +800,33 @@ def rename_selected_group():
         if not new_name:
             return
 
+        parent_id = tree.parent(selected)
+        parent_path = get_group_path(parent_id) if parent_id in tree_nodes else ""
+
+        if parent_path:
+            new_path = f"{parent_path}/{new_name}"
+        else:
+            new_path = new_name
+
+        if normalize_path(item.get("source_v8i", "")) == normalize_path(DEFAULT_V8I):
+            update_local_v8i_folder_path(old_path, new_path)
+            rename_local_v8i_empty_group(
+                current_name,
+                new_name,
+                parent_path
+            )
+
         item["name"] = new_name
 
         starter["open_nodes"] = get_open_nodes()
         save_json(starter)
+        auto_import_v8i_on_start()
         populate_tree()
         dialog.destroy()
 
     ttk.Button(dialog, text="Переименовать", command=apply).pack(pady=(6, 10))
 
+    entry.bind("<Return>", lambda e: apply())
 # Home → вернуться в начало списка
 def go_home(event=None):
     children = tree.get_children()
@@ -1044,7 +1134,18 @@ def insert_item(parent, item):
     )
 
     tree_nodes[iid] = item
-    tree.insert(parent, "end", iid=iid, text=item["name"], values=values)
+
+    icon_key = get_base_icon_key(item)
+    icon = BASE_ICONS.get(icon_key)
+
+    tree.insert(
+        parent,
+        "end",
+        iid=iid,
+        text=item["name"],
+        image=icon,
+        values=values
+    )
 
 def base_matches_filter(item):
     selected_version = version_filter_var.get()
@@ -1845,6 +1946,50 @@ def find_group_by_path(groups, group_path):
 
     return found
 
+def show_launch_context_menu(event, selected):
+    tree.selection_set(selected)
+    tree.focus(selected)
+
+    menu = tk.Menu(root, tearoff=0)
+
+    menu.add_command(
+        label="1С:Предприятие (F3)",
+        command=lambda: launch_selected_base("enterprise")
+    )
+    menu.add_command(
+        label="|- Запустить от имени администратора",
+        command=lambda: launch_selected_base("enterprise", run_as_admin=True)
+    )
+    menu.add_command(
+       label="|- Запустить с аутентификацией (Shift+F3)",
+        command=lambda: open_launch_params_dialog("enterprise", force_auth=True)
+    )
+    menu.add_command(
+        label="|- Запустить с выбором параметров (Ctrl+F3)",
+        command=lambda: open_launch_params_dialog("enterprise")
+    )
+
+    menu.add_separator()
+
+    menu.add_command(
+        label="Конфигуратор\tF4",
+        command=lambda: launch_selected_base("configurator")
+    )
+    menu.add_command(
+        label="|- Запустить от имени администратора",
+        command=lambda: launch_selected_base("configurator", run_as_admin=True)
+    )
+    menu.add_command(
+        label="|- Запустить с аутентификацией\tShift+F4",
+        command=lambda: open_launch_params_dialog("configurator", force_auth=True)
+    )
+    menu.add_command(
+        label="|- Запустить с выбором параметров\tCtrl+F4",
+        command=lambda: open_launch_params_dialog("configurator")
+    )
+
+    menu.post(event.x_root, event.y_root)
+
 
 def show_context_menu(event):
     selected = tree.identify_row(event.y)
@@ -1853,9 +1998,6 @@ def show_context_menu(event):
 
     current_selection = tree.selection()
 
-    # Если правый клик был по уже выделенному элементу,
-    # сохраняем множественное выделение.
-    # Если по невыделенному — выбираем только его.
     if selected not in current_selection:
         tree.selection_set(selected)
 
@@ -1865,11 +2007,25 @@ def show_context_menu(event):
     if not item:
         return
 
+    region = tree.identify_region(event.x, event.y)
+
+    try:
+        element = tree.identify_element(event.x, event.y)
+    except Exception:
+        element = ""
+
+    if (
+        item.get("type") == "base"
+        and region == "tree"
+        and "image" in element.lower()
+    ):
+        show_launch_context_menu(event, selected)
+        return
+
     menu = tk.Menu(root, tearoff=0)
 
     current_selection = tree.selection()
 
-    # Контекстное меню группы
     if item.get("type") == "group":
         if len(current_selection) == 1:
             menu.add_command(label="Переименовать группу...", command=rename_selected_group)
@@ -1880,7 +2036,6 @@ def show_context_menu(event):
         menu.post(event.x_root, event.y_root)
         return
 
-    # Контекстное меню базы
     if tree.parent(selected) == "favorites":
         def remove():
             favorites[:] = [
@@ -1903,6 +2058,7 @@ def show_context_menu(event):
     menu.add_command(label="Свойства...", command=open_selected_properties)
     menu.add_command(label="Удалить из списка", command=delete_selected_base)
     menu.post(event.x_root, event.y_root)
+
 
 # удалить группу
 def delete_selected_group():
@@ -1928,6 +2084,16 @@ def delete_selected_group():
         return
 
     group_id = ensure_id(item)
+
+    parent_id = tree.parent(selected)
+    parent_path = get_group_path(parent_id) if parent_id in tree_nodes else ""
+
+    if normalize_path(item.get("source_v8i", "")) == normalize_path(DEFAULT_V8I):
+        delete_local_v8i_empty_group(
+            item.get("name", ""),
+            parent_path
+        )
+
     removed = remove_node_by_id(starter.get("groups", []), group_id)
 
     if not removed:
@@ -1936,6 +2102,7 @@ def delete_selected_group():
 
     starter["open_nodes"] = get_open_nodes()
     save_json(starter)
+    auto_import_v8i_on_start()
     populate_tree()
 
 def get_installed_1c_versions():
@@ -2347,22 +2514,31 @@ def launch_selected_base(mode="enterprise", extra_params="", run_as_admin=False,
 
     cmd = f'"{exe_path}" {mode_flag} {arg}'
 
-    username = (base.get("username") or "").strip()
-    password = (base.get("password") or "").strip()
+    saved_params = (base.get("parameters") or "").strip()
+    extra_params = (extra_params or "").strip()
 
-    auth_enterprise = base.get("auth_enterprise") or {}
+    combined_params_lower = f"{saved_params} {extra_params}".lower()
 
-    if not username:
-        username = (auth_enterprise.get("username") or "").strip()
+    params_have_user = "/n" in combined_params_lower
+    params_have_password = "/p" in combined_params_lower
 
-    if not password:
-        password = (auth_enterprise.get("password") or "").strip()
+    if not params_have_user or not params_have_password:
+        username = (base.get("username") or "").strip()
+        password = (base.get("password") or "").strip()
 
-    if username:
-        cmd += f' /N"{username}"'
+        auth_enterprise = base.get("auth_enterprise") or {}
 
-    if password:
-        cmd += f' /P"{password}"'
+        if not username:
+            username = (auth_enterprise.get("username") or "").strip()
+
+        if not password:
+            password = (auth_enterprise.get("password") or "").strip()
+
+        if username and not params_have_user:
+            cmd += f' /N"{username}"'
+
+        if password and not params_have_password:
+            cmd += f' /P"{password}"'
 
     selected_interface = interface.get()
 
@@ -2375,9 +2551,14 @@ def launch_selected_base(mode="enterprise", extra_params="", run_as_admin=False,
 
         if selected_interface == "Версия 8.5":
             cmd += " /i85"
-    
-    if extra_params:
-        cmd += f" {extra_params}"
+
+    launch_params = " ".join(
+        p for p in [saved_params, extra_params]
+        if p
+    )
+
+    if launch_params:
+        cmd += f" {launch_params}"
     
     try:
         # status_var.set(cmd)
