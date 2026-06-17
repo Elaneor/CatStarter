@@ -101,6 +101,63 @@ def parse_v8i_file(path):
 
     return items
 
+# переименование пустой группы в локальном ibases.v8i
+def rename_local_v8i_empty_group(old_name, new_name, parent_folder=""):
+    local_v8i = normalize_path(DEFAULT_V8I)
+
+    if not os.path.exists(local_v8i):
+        return False
+
+    text = None
+    encoding_used = None
+
+    for encoding in ("utf-8-sig", "cp1251"):
+        try:
+            with open(local_v8i, "r", encoding=encoding) as f:
+                text = f.read()
+            encoding_used = encoding
+            break
+        except Exception:
+            continue
+
+    if text is None:
+        return False
+
+    old_name = (old_name or "").strip()
+    new_name = (new_name or "").strip()
+    parent_folder = (parent_folder or "").replace("\\", "/").strip("/")
+
+    if not old_name or not new_name:
+        return False
+
+    lines = text.splitlines()
+    result = []
+
+    in_target = False
+    section_name = ""
+
+    for line in lines:
+        stripped = line.strip()
+
+        if stripped.startswith("[") and stripped.endswith("]"):
+            section_name = stripped[1:-1].strip()
+            in_target = section_name == old_name
+
+            if in_target:
+                result.append(f"[{new_name}]")
+            else:
+                result.append(line)
+
+            continue
+
+        result.append(line)
+
+    with open(local_v8i, "w", encoding=encoding_used) as f:
+        f.write("\n".join(result) + "\n")
+
+    return True
+
+
 # обновление произвольного поля базы в локальном ibases.v8i
 def update_local_v8i_field(connect, field_name, value):
     local_v8i = normalize_path(DEFAULT_V8I)
@@ -274,3 +331,62 @@ def update_local_v8i_folder_path(old_folder_path, new_folder_path):
             f.write("\n".join(result) + "\n")
 
     return updated_count
+    
+    # удаление пустой группы из локального ibases.v8i
+def delete_local_v8i_empty_group(group_name, parent_folder=""):
+    local_v8i = normalize_path(DEFAULT_V8I)
+
+    if not os.path.exists(local_v8i):
+        return False
+
+    text = None
+    encoding_used = None
+
+    for encoding in ("utf-8-sig", "cp1251"):
+        try:
+            with open(local_v8i, "r", encoding=encoding) as f:
+                text = f.read()
+            encoding_used = encoding
+            break
+        except Exception:
+            continue
+
+    if text is None:
+        return False
+
+    group_name = (group_name or "").strip()
+
+    if not group_name:
+        return False
+
+    lines = text.splitlines()
+    result = []
+
+    current_section = []
+    current_name = None
+
+    def flush_section():
+        if current_name == group_name:
+            return
+
+        result.extend(current_section)
+
+    for line in lines:
+        stripped = line.strip()
+
+        if stripped.startswith("[") and stripped.endswith("]"):
+            if current_section:
+                flush_section()
+
+            current_section = [line]
+            current_name = stripped[1:-1].strip()
+        else:
+            current_section.append(line)
+
+    if current_section:
+        flush_section()
+
+    with open(local_v8i, "w", encoding=encoding_used) as f:
+        f.write("\n".join(result).rstrip() + "\n")
+
+    return True
