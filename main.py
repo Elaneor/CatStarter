@@ -2105,6 +2105,14 @@ def delete_selected_group():
     auto_import_v8i_on_start()
     populate_tree()
 
+
+def version_key(version):
+    try:
+        return tuple(int(part) for part in version.split("."))
+    except ValueError:
+        return (0,)
+
+# получить список установленных сборок платформы
 def get_installed_1c_versions():
     versions = []
 
@@ -2125,7 +2133,7 @@ def get_installed_1c_versions():
             if os.path.exists(exe_1cv8) or os.path.exists(exe_1cv8c):
                 versions.append(name)
 
-    return sorted(set(versions), reverse=True)
+    return sorted(set(versions), key=version_key, reverse=True)
 
 def resolve_1c_path(version, mode="enterprise"):
     base_dirs = [
@@ -2273,7 +2281,7 @@ def assign_platform_to_selected():
 
         builds = versions_tree.get(current_edition, {}).get(current_platform_version, [])
 
-        builds = sorted(builds, reverse=True)
+        builds = sorted(builds, key=version_key, reverse=True)
 
         for build in builds:
             build_listbox.insert(tk.END, build)
