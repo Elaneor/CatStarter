@@ -209,6 +209,53 @@ def clear_search_placeholder(event=None):
 
 search_entry.bind("<FocusIn>", clear_search_placeholder)
 
+# сортировка дерева
+def sort_tree_nodes(nodes, reverse=False):
+    groups = [n for n in nodes if n.get("type") == "group"]
+    bases = [n for n in nodes if n.get("type") == "base"]
+
+    groups.sort(key=lambda x: x.get("name", "").lower(), reverse=reverse)
+    bases.sort(key=lambda x: x.get("name", "").lower(), reverse=reverse)
+
+    for group in groups:
+        sort_tree_nodes(group.get("children", []), reverse)
+
+    nodes[:] = groups + bases
+
+def update_sort_headers():
+    if sort_name_desc:
+        text = "Наименование ▼"
+    else:
+        text = "Наименование ▲"
+
+    tree.heading("#0", text=text, command=sort_by_name)
+
+
+# обработка щелчка мыши по заголовку Наименование
+def sort_by_name():
+    global sort_name_desc, favorites
+
+    sort_tree_nodes(
+        starter.get("groups", []),
+        reverse=sort_name_desc
+    )
+
+    favorites.sort(
+        key=lambda x: x.get("name", "").lower(),
+        reverse=sort_name_desc
+    )
+
+    starter["favorites"] = favorites
+    save_json(starter)
+
+    populate_tree()
+
+    if sort_name_desc:
+        tree.heading("#0", text="Наименование ▼", command=sort_by_name)
+    else:
+        tree.heading("#0", text="Наименование ▲", command=sort_by_name)
+
+    sort_name_desc = not sort_name_desc
 
 def get_group_path(item_id):
     parts = []
@@ -337,6 +384,7 @@ main_notebook.add(bases_tab, text="1С:Предприятие 8")
 main_notebook.add(history_tab, text="История")
 main_notebook.add(commands_tab, text="Команды")
 
+
 # Дерево баз
 columns = ("platform", "last_run", "size")
 tree = ttk.Treeview(
@@ -346,7 +394,7 @@ tree = ttk.Treeview(
     selectmode="extended"
 )
 
-tree.heading("#0", text="Наименование")
+tree.heading("#0", text="Наименование", command=sort_by_name)
 tree.column("#0", width=360)
 
 tree.heading("platform", text="Платформа")
@@ -1001,6 +1049,7 @@ ttk.Combobox(param_frame, values=["Auto", "Версия 8.5", "Такси", "О�
 starter = {}
 favorites = []
 tree_nodes = {}
+sort_name_desc = False
 commands_nodes = {}
 
 def load_window_geometry():
@@ -1169,16 +1218,7 @@ def group_has_visible_bases(children):
     return False
 
 def insert_children(parent, children):
-    sorted_children = sorted(
-        children,
-        key=lambda x: (
-            x.get("type") != "group",
-            not x.get("name", "").startswith("_"),
-            x.get("name", "").lower()
-        )
-    )
-
-    for child in sorted_children:
+    for child in children:
         if child.get("type") == "group":
 
             open_nodes = starter.get("open_nodes", [])
@@ -1411,15 +1451,7 @@ def populate_tree():
         if base_matches_filter(fav):
             insert_item("favorites", fav)
 
-    sorted_groups = sorted(
-        starter.get("groups", []),
-        key=lambda x: (
-            not x.get("name", "").startswith("_"),
-            x.get("name", "").lower()
-        )
-    )
-
-    for group in sorted_groups:
+    for group in starter.get("groups", []):
 
         group_count = count_bases(group.get("children", []))
         group_title = f'{group["name"]} ({group_count})'
@@ -2680,6 +2712,7 @@ root.geometry(load_window_geometry())
 favorites = starter.get("favorites", [])
 
 populate_tree()
+update_sort_headers()
 populate_commands_tree()
 load_column_widths()
 root.protocol("WM_DELETE_WINDOW", on_close)
