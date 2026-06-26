@@ -403,6 +403,12 @@ tree.heading("size", text="Размер")
 
 tree.pack(fill="both", expand=True)
 
+# метка на случай, если платформы нет
+tree.tag_configure(
+    "missing_platform",
+    foreground="#9a9a9a"
+)
+
 # Панель инструментов для команд
 commands_toolbar = ttk.Frame(commands_tab)
 commands_toolbar.pack(fill="x", pady=(0, 5))
@@ -1176,8 +1182,16 @@ def insert_item(parent, item):
         counter += 1
         iid = f"{iid_base}_{counter}"
 
+    platform = item.get("platform", "")
+
+    tags = ()
+
+    if platform and not platform_exists(platform):
+        platform = "".join(ch + "\u0336" for ch in platform)
+        tags = ("missing_platform",)
+
     values = (
-        item.get("platform", ""),
+        platform,
         item.get("last_run", ""),
         item.get("size", "")
     )
@@ -1193,7 +1207,8 @@ def insert_item(parent, item):
         iid=iid,
         text=item["name"],
         image=icon,
-        values=values
+        values=values,
+        tags=tags
     )
 
 def base_matches_filter(item):
@@ -2194,6 +2209,14 @@ def resolve_1c_path(version, mode="enterprise"):
                 return exe_1cv8
 
     return None
+
+# проверка наличия версии платформы
+def platform_exists(version):
+    if not version:
+        return False
+
+    return resolve_1c_path(version, "enterprise") is not None \
+        or resolve_1c_path(version, "configurator") is not None
 
 def collect_bases_from_node(item_id):
     result = []
