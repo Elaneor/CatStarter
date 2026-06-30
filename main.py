@@ -1180,7 +1180,7 @@ def insert_item(parent, item):
 
     tags = ()
 
-    if platform and not platform_exists(platform):
+    if is_exact_platform_build(platform) and not platform_exists(platform):
         platform = f"⚠ {platform}"
 
     values = (
@@ -2213,6 +2213,13 @@ def resolve_1c_path(version, mode="enterprise"):
                 return exe_1cv8
 
     return None
+
+# проверка точной версии сборки
+def is_exact_platform_build(version):
+    version = (version or "").strip()
+    parts = version.split(".")
+
+    return len(parts) >= 4 and all(part.isdigit() for part in parts)
 
 # проверка наличия версии платформы
 def platform_exists(version):
