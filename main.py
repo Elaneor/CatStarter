@@ -403,12 +403,6 @@ tree.heading("size", text="Размер")
 
 tree.pack(fill="both", expand=True)
 
-# метка на случай, если платформы нет
-tree.tag_configure(
-    "missing_platform",
-    foreground="#9a9a9a"
-)
-
 # Панель инструментов для команд
 commands_toolbar = ttk.Frame(commands_tab)
 commands_toolbar.pack(fill="x", pady=(0, 5))
@@ -1187,8 +1181,7 @@ def insert_item(parent, item):
     tags = ()
 
     if platform and not platform_exists(platform):
-        platform = "".join(ch + "\u0336" for ch in platform)
-        tags = ("missing_platform",)
+        platform = f"⚠ {platform}"
 
     values = (
         platform,
@@ -1724,19 +1717,30 @@ def add_to_favorites():
             save_json(starter)
             populate_tree()
 
-def update_base_everywhere(name, connect, updates):
+def normalize_connect_for_match(connect):
+    return (connect or "").strip().rstrip(";").lower()
+
+def update_base_everywhere(name, connect, updates, base_id=""):
+    def is_same_base(node):
+        if base_id and node.get("id") and node.get("id") == base_id:
+            return True
+
+        return (
+            node.get("name") == name
+            and normalize_connect_for_match(node.get("connect")) == normalize_connect_for_match(connect)
+        )
+
     def walk(nodes):
         for node in nodes:
             if node.get("type") == "group":
                 walk(node.get("children", []))
-            elif node.get("type") == "base":
-                if node.get("name") == name and node.get("connect") == connect:
-                    node.update(updates)
+            elif node.get("type") == "base" and is_same_base(node):
+                node.update(updates)
 
     walk(starter.get("groups", []))
 
     for fav in starter.get("favorites", []):
-        if fav.get("name") == name and fav.get("connect") == connect:
+        if is_same_base(fav):
             fav.update(updates)
 
 def open_properties(item_id):
@@ -2212,8 +2216,13 @@ def resolve_1c_path(version, mode="enterprise"):
 
 # проверка наличия версии платформы
 def platform_exists(version):
+    version = (version or "").strip()
+
     if not version:
         return False
+
+    if version.startswith("8.2.") or version.startswith("8.3."):
+        return True
 
     return resolve_1c_path(version, "enterprise") is not None \
         or resolve_1c_path(version, "configurator") is not None
@@ -2392,7 +2401,8 @@ def assign_platform_to_selected():
             update_base_everywhere(
                 base.get("name"),
                 base.get("connect"),
-                {"platform": selected_version}
+                {"platform": selected_version},
+                base.get("id", "")
             )
 
             if normalize_path(base.get("source_v8i", "")) == normalize_path(DEFAULT_V8I):
