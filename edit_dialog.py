@@ -56,6 +56,9 @@ def get_installed_1c_versions():
     return sorted(set(versions), reverse=True)
 
 def open_properties_dialog(master, data, on_save):
+    print("password =", repr(data.get("password")))
+    print("auth_enterprise =", repr(data.get("auth_enterprise")))
+    
     dialog = tk.Toplevel(master)
     dialog.title("Свойства базы")
     dialog.transient(master)
@@ -123,8 +126,24 @@ def open_properties_dialog(master, data, on_save):
     ttk.Label(frame_auth, text="Пароль:").grid(row=1, column=0, sticky="w", pady=2)
     entry_password = ttk.Entry(frame_auth, show="*")
     entry_password.grid(row=1, column=1, pady=2, sticky="ew")
-    entry_password.insert(0, data.get("password", ""))
+
+    password_value = data.get("password", "")
+
+    if not password_value:
+        auth_enterprise = data.get("auth_enterprise") or {}
+        password_value = auth_enterprise.get("password", "")
+
+    entry_password.insert(0, password_value)
     enable_ctrl_v(entry_password)
+
+    def clear_password():
+        entry_password.delete(0, tk.END)
+
+    ttk.Button(
+        frame_auth,
+        text="Очистить пароль",
+        command=clear_password
+    ).grid(row=1, column=2, padx=(6, 0), pady=2)
 
     ttk.Label(frame_launch, text="Параметры запуска:").grid(row=0, column=0, sticky="w", pady=2)
     entry_params = ttk.Entry(frame_launch)
@@ -141,6 +160,8 @@ def open_properties_dialog(master, data, on_save):
     ).grid(row=1, column=1, sticky="w", pady=2)
 
     def save():
+        password_value = entry_password.get()
+        
         data["name"] = entry_name.get()
         data["platform"] = entry_platform.get()
         data["connect"] = entry_connect.get()
@@ -151,7 +172,7 @@ def open_properties_dialog(master, data, on_save):
         data["password"] = entry_password.get()
         data["auth_enterprise"] = {
             "username": entry_username.get(),
-            "password": entry_password.get()
+            "password": password_value
         }
         data["last_run"] = entry_last_run.get()
         on_save(data)
