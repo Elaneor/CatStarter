@@ -2598,7 +2598,7 @@ def launch_selected_base(mode="enterprise", extra_params="", run_as_admin=False,
         selected_client,
         selected_interface
     )
-        if not exe_path:
+    if not exe_path:
         messagebox.showerror("Ошибка", f"Не найдена исполняемая программа для платформы {version}.")
         return
 
