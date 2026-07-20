@@ -9,14 +9,29 @@ import subprocess
 import sys
 import uuid
 import webbrowser
-from PIL import Image, ImageTk
+from PIL import Image, ImageTk, ImageDraw
 from edit_dialog import (
     open_register_dialog,
     open_properties_dialog,
     center_window
 )
-from settings_dialog import open_settings_dialog
+from settings_dialog import (
+    open_settings_dialog,
+    load_settings,
+    import_v8i_into_starter
+)
+
 from command_dialog import open_command_dialog
+from v8i_utils import (
+    update_local_v8i_field,
+    update_local_v8i_folder_path,
+    delete_local_v8i_empty_group,
+    add_local_v8i_empty_group,
+    rename_local_v8i_empty_group,
+    normalize_path,
+    DEFAULT_V8I
+)
+
 
 class ToolTip:
     def __init__(self, widget, text):
@@ -67,6 +82,54 @@ def load_icon(name, size=(18, 18)):
     img = Image.open(path).resize(size, Image.Resampling.LANCZOS)
     return ImageTk.PhotoImage(img)
 
+
+# функции для отображения иконок баз по источнику и типу подключения
+def make_base_icon(color, size=(18, 12)):
+    img = Image.new("RGBA", size, (0, 0, 0, 0))
+    draw = ImageDraw.Draw(img)
+
+    draw.rectangle((1, 3, size[0] - 2, size[1] - 3), fill=color)
+
+    return ImageTk.PhotoImage(img)
+
+
+def get_base_source(item):
+    source = (item.get("source") or "").lower()
+    source_v8i = item.get("source_v8i", "")
+
+    if source in ("external", "shared", "v8i"):
+        return "external"
+
+    if source_v8i:
+        return "external"
+
+    return "local"
+
+
+def get_connect_type(connect):
+    connect = (connect or "").strip().lower()
+
+    if connect.startswith("srvr=") or "srvr=" in connect:
+        return "sql"
+
+    if (
+        connect.startswith("ws=")
+        or connect.startswith("/ws")
+        or connect.startswith("http://")
+        or connect.startswith("https://")
+    ):
+        return "ws"
+
+    return "file"
+
+
+def get_base_icon_key(item):
+    source = get_base_source(item)
+    connect_type = get_connect_type(item.get("connect", ""))
+
+    return f"{source}_{connect_type}"
+
+
 STARTER_JSON = os.path.join(APP_DIR, "starter.json")
 COMMANDS_JSON = os.path.join(APP_DIR, "commands.json")
 
@@ -84,6 +147,15 @@ if os.path.exists(icon_path):
     root.iconbitmap(icon_path)
 
 root.geometry("900x600")
+
+# заменяем все значки окон на Сина
+def apply_window_icon(window):
+    try:
+        window.iconbitmap(
+            os.path.join(RESOURCE_DIR, "assets", "cat.ico")
+        )
+    except Exception as e:
+        print(f"Ошибка установки иконки: {e}")
 
 # Правая часть — панель запуска и Син
 frame_right_container = tk.Frame(root, width=240)
@@ -106,6 +178,16 @@ icon_group = load_icon("folder.png")
 icon_settings = load_icon("settings.png")
 icon_delete = load_icon("delete.png")
 icon_version = load_icon("version.png")
+BASE_ICONS = {
+    "local_file": make_base_icon("#D9822B"),
+    "local_sql": make_base_icon("#D9822B"),
+    "local_ws": make_base_icon("#D9822B"),
+
+    "external_file": make_base_icon("#2F80C0"),
+    "external_sql": make_base_icon("#2F80C0"),
+    "external_ws": make_base_icon("#2F80C0"),
+}
+root.base_icons = BASE_ICONS
 
 search_var = tk.StringVar()
 search_entry = ttk.Entry(
@@ -127,10 +209,79 @@ def clear_search_placeholder(event=None):
 
 search_entry.bind("<FocusIn>", clear_search_placeholder)
 
+# сортировка дерева
+def sort_tree_nodes(nodes, reverse=False):
+    groups = [n for n in nodes if n.get("type") == "group"]
+    bases = [n for n in nodes if n.get("type") == "base"]
+
+    groups.sort(key=lambda x: x.get("name", "").lower(), reverse=reverse)
+    bases.sort(key=lambda x: x.get("name", "").lower(), reverse=reverse)
+
+    for group in groups:
+        sort_tree_nodes(group.get("children", []), reverse)
+
+    nodes[:] = groups + bases
+
+def update_sort_headers():
+    if sort_name_desc:
+        text = "Наименование ▼"
+    else:
+        text = "Наименование ▲"
+
+    tree.heading("#0", text=text, command=sort_by_name)
+
+
+# обработка щелчка мыши по заголовку Наименование
+def sort_by_name():
+    global sort_name_desc, favorites
+
+    sort_tree_nodes(
+        starter.get("groups", []),
+        reverse=sort_name_desc
+    )
+
+    favorites.sort(
+        key=lambda x: x.get("name", "").lower(),
+        reverse=sort_name_desc
+    )
+
+    starter["favorites"] = favorites
+    save_json(starter)
+
+    populate_tree()
+
+    if sort_name_desc:
+        tree.heading("#0", text="Наименование ▼", command=sort_by_name)
+    else:
+        tree.heading("#0", text="Наименование ▲", command=sort_by_name)
+
+    sort_name_desc = not sort_name_desc
+
+def get_group_path(item_id):
+    parts = []
+
+    current = item_id
+
+    while current:
+        item = tree_nodes.get(current)
+
+        if item and item.get("type") == "group":
+            name = item.get("name", "")
+
+            if name and name != "Информационные базы":
+                parts.append(name)
+
+        current = tree.parent(current)
+
+    parts.reverse()
+    return "/".join(parts)
+
+
 # добавление группы
 def create_group():
     dialog = tk.Toplevel(root)
     dialog.title("Создать группу")
+    apply_window_icon(dialog)
     dialog.grab_set()
     dialog.resizable(False, False)
 
@@ -153,7 +304,15 @@ def create_group():
             "children": []
         }
 
+        parent_folder = ""
+
         selected = tree.focus()
+        if selected in tree_nodes and tree_nodes[selected].get("type") == "group":
+            parent_folder = get_group_path(selected)
+
+        created_in_v8i = add_local_v8i_empty_group(name, parent_folder)
+        print("GROUP CREATED IN V8I:", created_in_v8i, name, parent_folder) 
+
         if selected in tree_nodes and tree_nodes[selected].get("type") == "group":
             tree_nodes[selected].setdefault("children", []).append(new_group)
         elif starter.get("groups"):
@@ -166,6 +325,8 @@ def create_group():
             }]
 
         save_json(starter)
+        auto_import_v8i_on_start()
+        favorites = starter.get("favorites", [])
         populate_tree()
         dialog.destroy()
 
@@ -223,6 +384,7 @@ main_notebook.add(bases_tab, text="1С:Предприятие 8")
 main_notebook.add(history_tab, text="История")
 main_notebook.add(commands_tab, text="Команды")
 
+
 # Дерево баз
 columns = ("platform", "last_run", "size")
 tree = ttk.Treeview(
@@ -232,10 +394,13 @@ tree = ttk.Treeview(
     selectmode="extended"
 )
 
-tree.heading("#0", text="Наименование")
+tree.heading("#0", text="Наименование", command=sort_by_name)
+tree.column("#0", width=360)
+
 tree.heading("platform", text="Платформа")
 tree.heading("last_run", text="Дата")
 tree.heading("size", text="Размер")
+
 tree.pack(fill="both", expand=True)
 
 # Панель инструментов для команд
@@ -271,7 +436,7 @@ btn_command_delete.pack(side="left", padx=2)
 # Дерево команд
 commands_tree = ttk.Treeview(
     commands_tab,
-    columns=("command_type", "command"),
+    columns=("command",),
     show="tree headings",
     selectmode="browse"
 )
@@ -280,7 +445,7 @@ commands_tree.heading("#0", text="Наименование")
 commands_tree.heading("command", text="Команда")
 
 commands_tree.column("#0", width=220)
-commands_tree.column("command", width=420)
+commands_tree.column("command", width=520)
 
 commands_tree.pack(fill="both", expand=True)
 
@@ -574,8 +739,16 @@ def find_next(event=None):
     return "break"
 
 
-root.bind("<F3>", find_next)
 search_entry.bind("<F3>", find_next)
+
+root.bind("<F3>", lambda e: launch_selected_base("enterprise"))
+root.bind("<F4>", lambda e: launch_selected_base("configurator"))
+
+root.bind("<Shift-F3>", lambda e: open_launch_params_dialog("enterprise", force_auth=True))
+root.bind("<Shift-F4>", lambda e: open_launch_params_dialog("configurator", force_auth=True))
+
+root.bind("<Control-F3>", lambda e: open_launch_params_dialog("enterprise"))
+root.bind("<Control-F4>", lambda e: open_launch_params_dialog("configurator"))
 
 
 # Ctrl+F → фокус в поиск
@@ -651,9 +824,11 @@ def rename_selected_group():
         return
 
     current_name = item.get("name", "")
+    old_path = get_group_path(selected)
 
     dialog = tk.Toplevel(root)
     dialog.title("Переименовать группу")
+    apply_window_icon(dialog)
     dialog.transient(root)
     dialog.grab_set()
 
@@ -673,15 +848,33 @@ def rename_selected_group():
         if not new_name:
             return
 
+        parent_id = tree.parent(selected)
+        parent_path = get_group_path(parent_id) if parent_id in tree_nodes else ""
+
+        if parent_path:
+            new_path = f"{parent_path}/{new_name}"
+        else:
+            new_path = new_name
+
+        if normalize_path(item.get("source_v8i", "")) == normalize_path(DEFAULT_V8I):
+            update_local_v8i_folder_path(old_path, new_path)
+            rename_local_v8i_empty_group(
+                current_name,
+                new_name,
+                parent_path
+            )
+
         item["name"] = new_name
 
         starter["open_nodes"] = get_open_nodes()
         save_json(starter)
+        auto_import_v8i_on_start()
         populate_tree()
         dialog.destroy()
 
     ttk.Button(dialog, text="Переименовать", command=apply).pack(pady=(6, 10))
 
+    entry.bind("<Return>", lambda e: apply())
 # Home → вернуться в начало списка
 def go_home(event=None):
     children = tree.get_children()
@@ -848,26 +1041,40 @@ btn_starter.grid(row=2, column=0, columnspan=2, sticky="ew", pady=2)
 param_frame = ttk.LabelFrame(frame_right, text="Параметры запуска")
 param_frame.pack(fill="x", pady=(10, 5))
 
-ttklab = ttk.Label(param_frame, text="Интерфейс:")
-ttklab.pack(anchor="w", pady=(10, 0))
+ttk.Label(
+    param_frame,
+    text="Интерфейс:"
+).pack(anchor="w", padx=8, pady=(8, 0))
 
-# выбор варианта интерфейса
 interface = tk.StringVar(value="Auto")
-ttk.Combobox(param_frame, values=["Auto", "Версия 8.5", "Такси", "Обычный"], textvariable=interface, state="readonly").pack(anchor="w")
-# выбор варианта клиента
-ttk.Label(param_frame, text="Клиент:").pack(anchor="w", pady=(8, 0))
+
+ttk.Combobox(
+    param_frame,
+    values=["Auto", "Версия 8.5", "Такси", "Обычный"],
+    textvariable=interface,
+    state="readonly",
+    width=18
+).pack(anchor="w", padx=8, pady=(2, 6))
+
+ttk.Label(
+    param_frame,
+    text="Клиент:"
+).pack(anchor="w", padx=8, pady=(2, 0))
+
 client = tk.StringVar(value="Auto")
+
 ttk.Combobox(
     param_frame,
     values=["Auto", "Толстый", "Тонкий"],
     textvariable=client,
-    state="readonly"
-).pack(anchor="w")
-
+    state="readonly",
+    width=18
+).pack(anchor="w", padx=8, pady=(2, 8))
 
 starter = {}
 favorites = []
 tree_nodes = {}
+sort_name_desc = False
 commands_nodes = {}
 
 def load_window_geometry():
@@ -917,6 +1124,20 @@ def load_json():
 def save_json(data):
     with open(STARTER_JSON, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=4)
+
+# функции для автообновления баз из списков инфобаз
+def auto_import_v8i_on_start():
+    settings = load_settings()
+    v8i_paths = settings.get("v8i_paths", [])
+
+    if not v8i_paths:
+        return
+
+    try:
+        import_v8i_into_starter(starter, v8i_paths)
+        save_json(starter)
+    except Exception as e:
+        print(f"Автоимпорт v8i не выполнен: {e}")
 
 # Загрузка списка команд для вкладки "Команды"
 def load_commands():
@@ -980,19 +1201,32 @@ def insert_item(parent, item):
         counter += 1
         iid = f"{iid_base}_{counter}"
 
+    platform = item.get("platform", "")
+
+    tags = ()
+
+    if is_exact_platform_build(platform) and not platform_exists(platform):
+        platform = f"⚠ {platform}"
+
     values = (
-        item.get("platform", ""),
+        platform,
         item.get("last_run", ""),
         item.get("size", "")
     )
 
     tree_nodes[iid] = item
+
+    icon_key = get_base_icon_key(item)
+    icon = BASE_ICONS.get(icon_key)
+
     tree.insert(
         parent,
         "end",
         iid=iid,
         text=item["name"],
-        values=values
+        image=icon,
+        values=values,
+        tags=tags
     )
 
 def base_matches_filter(item):
@@ -1017,16 +1251,7 @@ def group_has_visible_bases(children):
     return False
 
 def insert_children(parent, children):
-    sorted_children = sorted(
-        children,
-        key=lambda x: (
-            x.get("type") != "group",
-            not x.get("name", "").startswith("_"),
-            x.get("name", "").lower()
-        )
-    )
-
-    for child in sorted_children:
+    for child in children:
         if child.get("type") == "group":
 
             open_nodes = starter.get("open_nodes", [])
@@ -1062,6 +1287,7 @@ def open_launch_params_dialog(mode="enterprise", force_auth=False):
 
     dialog = tk.Toplevel(root)
     dialog.title(f"Параметры запуска {mode_title}")
+    apply_window_icon(dialog)
     dialog.transient(root)
     dialog.grab_set()
 
@@ -1121,41 +1347,19 @@ def open_launch_params_dialog(mode="enterprise", force_auth=False):
     scrollbar.pack(side="right", fill="y")
 
     known_params = [
-        ("/UC", "Оба", "Обход блокировки установки соединения"),
-        ("/ClearCache", "Оба", "Очистка кэша клиент-серверных вызовов"),
-        ("/DisableStartupMessages", "Оба", "Подавление стартовых сообщений"),
-        ("/AllowExecuteScheduledJobs -Off", "Предприятие", "Не запускать регламентные задания"),
-        ("/AllowExecuteScheduledJobs -On", "Предприятие", "Выполнять регламентные задания"),
+        ("UC", "Оба", "Обход блокировки сеанса"),
+        ("ClearCache", "Оба", "Очистка кэша клиент-серверных вызовов"),
+        ("DisableStartupMessages", "Оба", "Подавление стартовых сообщений"),
+        ("AllowExecuteScheduledJobs -Off", "Предприятие", "Не запускать регламентные задания"),
+        ("AllowExecuteScheduledJobs -On", "Предприятие", "Выполнять регламентные задания"),
         ("/Len", "Оба", "Использование английского интерфейса"),
-        ("/LogUI", "Оба", "Логирование действий пользователя"),
-        ("/UseHwLicenses+", "Оба", "Использовать локальный аппаратный ключ защиты"),
-        ("/UseHwLicenses-", "Оба", "Не использовать локальный аппаратный ключ защиты"),
-        ("/Out", "Оба", "Установка файла для вывода служебных сообщений"),
-        (
-            "/RunModeOrdinaryApplication",
-            "Предприятие",
-            "Запуск толстого клиента в режиме обычного приложения"
-        ),
-        (
-            "/RunModeManagedApplication",
-            "Предприятие",
-            "Запуск толстого клиента в режиме управляемого приложения"
-        ),
-        (
-            "/DumpConfigToFiles",
-            "Конфигуратор",
-            "Выгрузка конфигурации в файлы"
-        ),
-        (
-            "/LoadConfigFromFiles",
-            "Конфигуратор",
-            "Загрузка конфигурации из файлов"
-        ),
-        (
-            "/UpdateDBCfg",
-            "Конфигуратор",
-            "Обновление конфигурации базы данных"
-        )
+        ("LogUI", "Оба", "Логирование действий пользователя"),
+        ("UseHwLicenses+", "Оба", "Поиск локального ключа защиты выполняется"),
+        ("UseHwLicenses-", "Оба", "Поиск локального ключа защиты не выполняется"),
+        ("Out", "Оба", "Установка файла для вывода служебных сообщений"),
+        ("DumpConfigToFiles", "Конфигуратор", "Выгрузка конфигурации в файлы"),
+        ("LoadConfigFromFiles", "Конфигуратор", "Загрузка конфигурации из файлов"),
+        ("UpdateDBCfg", "Конфигуратор", "Обновление конфигурации базы данных")
     ]
 
     allowed_mode = "Предприятие" if mode == "enterprise" else "Конфигуратор"
@@ -1165,35 +1369,19 @@ def open_launch_params_dialog(mode="enterprise", force_auth=False):
             params_tree.insert("", "end", values=(param, param_mode, desc))
 
     def add_selected_param():
-        selected_items = params_tree.selection()
-
-        if selected_items:
-            selected_param = selected_items[0]
-        else:
-            selected_param = params_tree.focus()
-
+        selected_param = params_tree.focus()
         if not selected_param:
-            messagebox.showinfo(
-                "Параметры запуска",
-                "Выберите параметр в списке."
-            )
             return
 
         values = params_tree.item(selected_param, "values")
-
         if not values:
             return
 
-        param = str(values[0]).strip()
+        param = values[0]
         current = params_var.get().strip()
 
-        if param.lower() not in current.lower():
-            params_var.set(
-                " ".join(value for value in (current, param) if value)
-            )
-
-        entry_params.focus_set()
-        entry_params.icursor(tk.END)
+        if param not in current:
+            params_var.set((current + " " + param).strip())
 
     def edit_params():
         entry_params.focus_set()
@@ -1296,15 +1484,7 @@ def populate_tree():
         if base_matches_filter(fav):
             insert_item("favorites", fav)
 
-    sorted_groups = sorted(
-        starter.get("groups", []),
-        key=lambda x: (
-            not x.get("name", "").startswith("_"),
-            x.get("name", "").lower()
-        )
-    )
-
-    for group in sorted_groups:
+    for group in starter.get("groups", []):
 
         group_count = count_bases(group.get("children", []))
         group_title = f'{group["name"]} ({group_count})'
@@ -1436,6 +1616,7 @@ def create_command():
 def open_platform_filter_dialog():
     dialog = tk.Toplevel(root)
     dialog.title("Отбор по версии платформы")
+    apply_window_icon(dialog)
     dialog.transient(root)
     dialog.grab_set()
 
@@ -1561,19 +1742,30 @@ def add_to_favorites():
             save_json(starter)
             populate_tree()
 
-def update_base_everywhere(name, connect, updates):
+def normalize_connect_for_match(connect):
+    return (connect or "").strip().rstrip(";").lower()
+
+def update_base_everywhere(name, connect, updates, base_id=""):
+    def is_same_base(node):
+        if base_id and node.get("id") and node.get("id") == base_id:
+            return True
+
+        return (
+            node.get("name") == name
+            and normalize_connect_for_match(node.get("connect")) == normalize_connect_for_match(connect)
+        )
+
     def walk(nodes):
         for node in nodes:
             if node.get("type") == "group":
                 walk(node.get("children", []))
-            elif node.get("type") == "base":
-                if node.get("name") == name and node.get("connect") == connect:
-                    node.update(updates)
+            elif node.get("type") == "base" and is_same_base(node):
+                node.update(updates)
 
     walk(starter.get("groups", []))
 
     for fav in starter.get("favorites", []):
-        if fav.get("name") == name and fav.get("connect") == connect:
+        if is_same_base(fav):
             fav.update(updates)
 
 def open_properties(item_id):
@@ -1584,6 +1776,16 @@ def open_properties(item_id):
         old_connect = item.get("connect")
 
         update_base_everywhere(old_name, old_connect, new_data)
+
+        selected_version = new_data.get("platform", "").strip()
+
+        if selected_version:
+            if normalize_path(item.get("source_v8i", "")) == normalize_path(DEFAULT_V8I):
+                update_local_v8i_field(
+                    old_connect,
+                    "DefaultVersion",
+                    selected_version
+                )
 
         save_json(starter)
         populate_tree()
@@ -1724,6 +1926,7 @@ def move_selected_nodes():
 
     dialog = tk.Toplevel(root)
     dialog.title("Переместить в группу")
+    apply_window_icon(dialog)
     dialog.transient(root)
     dialog.grab_set()
 
@@ -1769,7 +1972,26 @@ def move_selected_nodes():
                 moved.append(removed)
 
         target_group.setdefault("children", []).extend(moved)
+        
+        target_folder = target_path.replace("\\", "/")
 
+        if target_folder.startswith("Информационные базы/"):
+            target_folder = target_folder[len("Информационные базы/"):]
+
+        elif target_folder == "Информационные базы":
+            target_folder = ""
+
+        target_folder_value = f"/{target_folder}" if target_folder else "/"
+
+        for moved_item in moved:
+            if moved_item.get("type") == "base":
+                if normalize_path(moved_item.get("source_v8i", "")) == normalize_path(DEFAULT_V8I):
+                    update_local_v8i_field(
+                        moved_item.get("connect", ""),
+                        "Folder",
+                        target_folder_value
+                    )
+        
         starter["open_nodes"] = get_open_nodes()
         starter["open_nodes"].append(target_id)
 
@@ -1800,6 +2022,50 @@ def find_group_by_path(groups, group_path):
 
     return found
 
+def show_launch_context_menu(event, selected):
+    tree.selection_set(selected)
+    tree.focus(selected)
+
+    menu = tk.Menu(root, tearoff=0)
+
+    menu.add_command(
+        label="1С:Предприятие (F3)",
+        command=lambda: launch_selected_base("enterprise")
+    )
+    menu.add_command(
+        label="|- Запустить от имени администратора",
+        command=lambda: launch_selected_base("enterprise", run_as_admin=True)
+    )
+    menu.add_command(
+       label="|- Запустить с аутентификацией (Shift+F3)",
+        command=lambda: open_launch_params_dialog("enterprise", force_auth=True)
+    )
+    menu.add_command(
+        label="|- Запустить с выбором параметров (Ctrl+F3)",
+        command=lambda: open_launch_params_dialog("enterprise")
+    )
+
+    menu.add_separator()
+
+    menu.add_command(
+        label="Конфигуратор\tF4",
+        command=lambda: launch_selected_base("configurator")
+    )
+    menu.add_command(
+        label="|- Запустить от имени администратора",
+        command=lambda: launch_selected_base("configurator", run_as_admin=True)
+    )
+    menu.add_command(
+        label="|- Запустить с аутентификацией\tShift+F4",
+        command=lambda: open_launch_params_dialog("configurator", force_auth=True)
+    )
+    menu.add_command(
+        label="|- Запустить с выбором параметров\tCtrl+F4",
+        command=lambda: open_launch_params_dialog("configurator")
+    )
+
+    menu.post(event.x_root, event.y_root)
+
 
 def show_context_menu(event):
     selected = tree.identify_row(event.y)
@@ -1808,9 +2074,6 @@ def show_context_menu(event):
 
     current_selection = tree.selection()
 
-    # Если правый клик был по уже выделенному элементу,
-    # сохраняем множественное выделение.
-    # Если по невыделенному — выбираем только его.
     if selected not in current_selection:
         tree.selection_set(selected)
 
@@ -1820,21 +2083,35 @@ def show_context_menu(event):
     if not item:
         return
 
+    region = tree.identify_region(event.x, event.y)
+
+    try:
+        element = tree.identify_element(event.x, event.y)
+    except Exception:
+        element = ""
+
+    if (
+        item.get("type") == "base"
+        and region == "tree"
+        and "image" in element.lower()
+    ):
+        show_launch_context_menu(event, selected)
+        return
+
     menu = tk.Menu(root, tearoff=0)
 
     current_selection = tree.selection()
 
-    # Контекстное меню группы
     if item.get("type") == "group":
         if len(current_selection) == 1:
             menu.add_command(label="Переименовать группу...", command=rename_selected_group)
+            menu.add_command(label="Свойства...", command=open_selected_properties)
             menu.add_command(label="Удалить группу...", command=delete_selected_group)
 
         menu.add_command(label="Переместить в группу...", command=move_selected_nodes)
         menu.post(event.x_root, event.y_root)
         return
 
-    # Контекстное меню базы
     if tree.parent(selected) == "favorites":
         def remove():
             favorites[:] = [
@@ -1854,9 +2131,10 @@ def show_context_menu(event):
 
     menu.add_separator()
     menu.add_command(label="Переместить в группу...", command=move_selected_nodes)
-    menu.add_command(label="Свойства", command=lambda: open_properties(selected))
+    menu.add_command(label="Свойства...", command=open_selected_properties)
     menu.add_command(label="Удалить из списка", command=delete_selected_base)
     menu.post(event.x_root, event.y_root)
+
 
 # удалить группу
 def delete_selected_group():
@@ -1882,6 +2160,16 @@ def delete_selected_group():
         return
 
     group_id = ensure_id(item)
+
+    parent_id = tree.parent(selected)
+    parent_path = get_group_path(parent_id) if parent_id in tree_nodes else ""
+
+    if normalize_path(item.get("source_v8i", "")) == normalize_path(DEFAULT_V8I):
+        delete_local_v8i_empty_group(
+            item.get("name", ""),
+            parent_path
+        )
+
     removed = remove_node_by_id(starter.get("groups", []), group_id)
 
     if not removed:
@@ -1890,8 +2178,17 @@ def delete_selected_group():
 
     starter["open_nodes"] = get_open_nodes()
     save_json(starter)
+    auto_import_v8i_on_start()
     populate_tree()
 
+
+def version_key(version):
+    try:
+        return tuple(int(part) for part in version.split("."))
+    except ValueError:
+        return (0,)
+
+# получить список установленных сборок платформы
 def get_installed_1c_versions():
     versions = []
 
@@ -1912,7 +2209,88 @@ def get_installed_1c_versions():
             if os.path.exists(exe_1cv8) or os.path.exists(exe_1cv8c):
                 versions.append(name)
 
-    return sorted(set(versions), reverse=True)
+    return sorted(set(versions), key=version_key, reverse=True)
+
+def resolve_1c_path(
+    version,
+    mode="enterprise",
+    selected_client="Auto",
+    selected_interface="Auto"
+):
+    base_dirs = [
+        os.path.join(
+            os.environ.get("PROGRAMFILES", r"C:\Program Files"),
+            "1cv8",
+            version,
+            "bin"
+        ),
+        os.path.join(
+            os.environ.get("PROGRAMFILES(X86)", r"C:\Program Files (x86)"),
+            "1cv8",
+            version,
+            "bin"
+        )
+    ]
+
+    for base_dir in base_dirs:
+        exe_1cv8 = os.path.join(base_dir, "1cv8.exe")
+        exe_1cv8c = os.path.join(base_dir, "1cv8c.exe")
+
+        # Конфигуратор всегда запускается через 1cv8.exe
+        if mode == "configurator":
+            if os.path.exists(exe_1cv8):
+                return exe_1cv8
+
+            continue
+
+        # Явно выбран толстый клиент
+        if selected_client == "Толстый":
+            if os.path.exists(exe_1cv8):
+                return exe_1cv8
+
+            return None
+
+        # Явно выбран тонкий клиент
+        if selected_client == "Тонкий":
+            if os.path.exists(exe_1cv8c):
+                return exe_1cv8c
+
+            return None
+
+        # Автоматический выбор клиента:
+        # для обычного интерфейса нужен толстый клиент,
+        # для остальных интерфейсов сначала пробуем тонкий
+        if selected_interface == "Обычный":
+            if os.path.exists(exe_1cv8):
+                return exe_1cv8
+        else:
+            if os.path.exists(exe_1cv8c):
+                return exe_1cv8c
+
+            if os.path.exists(exe_1cv8):
+                return exe_1cv8
+
+    return None
+
+# проверка точной версии сборки
+def is_exact_platform_build(version):
+    version = (version or "").strip()
+    parts = version.split(".")
+
+    return len(parts) >= 4 and all(part.isdigit() for part in parts)
+
+# проверка наличия версии платформы
+def platform_exists(version):
+    version = (version or "").strip()
+
+    if not version:
+        return False
+
+    if version.startswith("8.2.") or version.startswith("8.3."):
+        return True
+
+    return resolve_1c_path(version, "enterprise") is not None \
+        or resolve_1c_path(version, "configurator") is not None
 
 def collect_bases_from_node(item_id):
     result = []
@@ -1927,6 +2305,7 @@ def collect_bases_from_node(item_id):
 
     return result
 
+# назначение версии платформы для выбранной базы / группы баз
 def assign_platform_to_selected():
     selected = tree.focus()
     if not selected:
@@ -1943,39 +2322,191 @@ def assign_platform_to_selected():
         messagebox.showerror("Версия платформы", "Установленные версии платформы не найдены.")
         return
 
+    versions_tree = {}
+
+    for version in versions:
+        parts = version.split(".")
+
+        if len(parts) >= 3:
+            edition = f"{parts[0]}.{parts[1]}"
+            platform_version = f"{parts[0]}.{parts[1]}.{parts[2]}"
+        elif len(parts) >= 2:
+            edition = f"{parts[0]}.{parts[1]}"
+            platform_version = version
+        else:
+            edition = version
+            platform_version = version
+
+        versions_tree.setdefault(edition, {})
+        versions_tree[edition].setdefault(platform_version, [])
+        versions_tree[edition][platform_version].append(version)
+
+    preferred_editions = ["8.5", "8.3", "8.2"]
+    edition_values = [
+        edition for edition in preferred_editions
+        if edition in versions_tree
+    ]
+
+    for edition in sorted(versions_tree.keys(), reverse=True):
+        if edition not in edition_values:
+            edition_values.append(edition)
+
     dialog = tk.Toplevel(root)
     dialog.title("Назначить версию платформы")
+    apply_window_icon(dialog)
     dialog.transient(root)
     dialog.grab_set()
     dialog.lift()
     dialog.focus_force()
 
-    center_window(root, dialog, 320, 140)
+    center_window(root, dialog, 440, 360)
 
-    ttk.Label(dialog, text=f"Баз будет обновлено: {len(bases)}").pack(anchor="w", padx=10, pady=(10, 4))
+    ttk.Label(
+        dialog,
+        text=f"Баз будет обновлено: {len(bases)}"
+    ).pack(anchor="w", padx=10, pady=(10, 4))
 
-    platform_var = tk.StringVar(value=versions[0])
-    combo = ttk.Combobox(dialog, textvariable=platform_var, values=versions, state="readonly", width=25)
-    combo.pack(fill="x", padx=10, pady=4)
-    combo.focus_set()
+    frame_edition = ttk.LabelFrame(dialog, text="Редакция платформы")
+    frame_edition.pack(fill="x", padx=10, pady=(6, 4))
+
+    edition_var = tk.StringVar(value=edition_values[0])
+
+    frame_platform_version = ttk.LabelFrame(dialog, text="Версия платформы")
+    frame_platform_version.pack(fill="x", padx=10, pady=(6, 4))
+
+    platform_version_var = tk.StringVar()
+
+    platform_version_combo = ttk.Combobox(
+        frame_platform_version,
+        textvariable=platform_version_var,
+        state="readonly"
+    )
+    platform_version_combo.pack(fill="x", padx=6, pady=6)
+
+    frame_build = ttk.LabelFrame(dialog, text="Установленные сборки")
+    frame_build.pack(fill="both", expand=True, padx=10, pady=(6, 4))
+
+    build_listbox = tk.Listbox(
+        frame_build,
+        height=7,
+        exportselection=False
+    )
+    build_listbox.pack(side="left", fill="both", expand=True, padx=(6, 0), pady=6)
+
+    scrollbar = ttk.Scrollbar(
+        frame_build,
+        orient="vertical",
+        command=build_listbox.yview
+    )
+    scrollbar.pack(side="right", fill="y", padx=(0, 6), pady=6)
+
+    build_listbox.configure(yscrollcommand=scrollbar.set)
+
+    def refresh_builds(event=None):
+        build_listbox.delete(0, tk.END)
+
+        current_edition = edition_var.get()
+        current_platform_version = platform_version_var.get()
+
+        builds = versions_tree.get(current_edition, {}).get(current_platform_version, [])
+
+        builds = sorted(builds, key=version_key, reverse=True)
+
+        for build in builds:
+            build_listbox.insert(tk.END, build)
+
+        if builds:
+            build_listbox.selection_set(0)
+            build_listbox.focus_set()
+
+    def refresh_platform_versions():
+        current_edition = edition_var.get()
+
+        platform_versions = sorted(
+            versions_tree.get(current_edition, {}).keys(),
+            reverse=True
+        )
+
+        platform_version_combo["values"] = platform_versions
+
+        if platform_versions:
+            platform_version_var.set(platform_versions[0])
+        else:
+            platform_version_var.set("")
+
+        refresh_builds()
+
+    for edition in edition_values:
+        ttk.Radiobutton(
+            frame_edition,
+            text=edition,
+            variable=edition_var,
+            value=edition,
+            command=refresh_platform_versions
+        ).pack(side="left", padx=8, pady=6)
+
+    platform_version_combo.bind("<<ComboboxSelected>>", refresh_builds)
+
+    def get_selected_version():
+        selection = build_listbox.curselection()
+        if not selection:
+            return ""
+
+        return build_listbox.get(selection[0]).strip()
 
     def apply_version():
-        selected_version = platform_var.get().strip()
+        selected_version = get_selected_version()
         if not selected_version:
+            messagebox.showinfo("Версия платформы", "Выберите сборку платформы.")
             return
+
+        local_updated = 0
 
         for base in bases:
             update_base_everywhere(
                 base.get("name"),
                 base.get("connect"),
-                {"platform": selected_version}
+                {"platform": selected_version},
+                base.get("id", "")
             )
+
+            if normalize_path(base.get("source_v8i", "")) == normalize_path(DEFAULT_V8I):
+                if update_local_v8i_field(
+                    base.get("connect", ""),
+                    "DefaultVersion",
+                    selected_version
+                ):
+                    local_updated += 1
 
         save_json(starter)
         populate_tree()
         dialog.destroy()
 
-    ttk.Button(dialog, text="Назначить", command=apply_version).pack(pady=(6, 10))
+        if local_updated:
+            messagebox.showinfo(
+                "Версия платформы",
+                f"Версия назначена.\nОбновлено записей в локальном ibases.v8i: {local_updated}"
+            )
+
+    button_frame = ttk.Frame(dialog)
+    button_frame.pack(fill="x", padx=10, pady=(4, 10))
+
+    ttk.Button(
+        button_frame,
+        text="Отмена",
+        command=dialog.destroy
+    ).pack(side="right")
+
+    ttk.Button(
+        button_frame,
+        text="Назначить",
+        command=apply_version
+    ).pack(side="right", padx=(0, 6))
+
+    build_listbox.bind("<Double-1>", lambda e: apply_version())
+
+    refresh_platform_versions()
+
 
 btn_platform = ttk.Button(
     toolbar,
@@ -1995,64 +2526,58 @@ toolbar.icons = [
     icon_version
 ]
 
+# Открыть свойства выбранного элемента дерева
+def open_selected_properties():
+    selected = get_selected_tree_item()
+
+    if not selected:
+        messagebox.showinfo("Свойства", "Выберите базу или группу.")
+        return
+
+    item = tree_nodes.get(selected)
+
+    if not item:
+        messagebox.showinfo("Свойства", "Выберите базу или группу.")
+        return
+
+    if item.get("type") == "base":
+        open_properties(selected)
+        return
+
+    if item.get("type") == "group":
+        rename_selected_group()
+        return
+        
+# Получить выбранный элемент дерева
+def get_selected_tree_item():
+    selected = tree.focus()
+
+    if selected and selected in tree_nodes:
+        return selected
+
+    selection = tree.selection()
+
+    if selection:
+        selected = selection[0]
+
+        if selected in tree_nodes:
+            return selected
+
+    return ""
    
 # Запуск выбранной информационной базы   
-def resolve_1c_path(
-    version,
-    mode,
-    selected_client="Auto",
-    selected_interface="Auto"
-):
-    base_dirs = [
-        os.path.join(
-            os.environ.get("PROGRAMFILES", r"C:\Program Files"),
-            "1cv8"
-        ),
-        os.path.join(
-            os.environ.get("PROGRAMFILES(X86)", r"C:\Program Files (x86)"),
-            "1cv8"
-        )
-    ]
-
-    if mode == "configurator":
-        exe_name = "1cv8.exe"
-
-    elif selected_client == "Толстый":
-        exe_name = "1cv8.exe"
-
-    elif selected_client == "Тонкий":
-        exe_name = "1cv8c.exe"
-
-    else:
-        # Auto сохраняет прежнее поведение:
-        # обычное приложение запускается толстым клиентом,
-        # остальные варианты — тонким.
-        if selected_interface == "Обычный":
-            exe_name = "1cv8.exe"
-        else:
-            exe_name = "1cv8c.exe"
-
-    for base_dir in base_dirs:
-        exe_path = os.path.join(
-            base_dir,
-            version,
-            "bin",
-            exe_name
-        )
-
-        if os.path.exists(exe_path):
-            return exe_path
-
-    return None
-
 def launch_selected_base(mode="enterprise", extra_params="", run_as_admin=False, forced_version=""):
-    print("launch mode:", mode)
-    selected = tree.focus()
-    if not selected or selected not in tree_nodes:
+    selected = get_selected_tree_item()
+
+    if not selected:
         messagebox.showinfo("Выбор", "Выберите базу")
         return
 
     base = tree_nodes[selected]
+
+    if base.get("type") != "base":
+        messagebox.showinfo("Выбор", "Выберите базу")
+        return
     
     base_run_as_admin = base.get("run_as_admin", False)
     run_as_admin = run_as_admin or base_run_as_admin
@@ -2060,15 +2585,12 @@ def launch_selected_base(mode="enterprise", extra_params="", run_as_admin=False,
     connect = base.get("connect", "")
     version = forced_version or base.get("platform", "")
 
+    if not connect or not version:
+        messagebox.showerror("Ошибка", "Отсутствует строка подключения или версия платформы.")
+        return
+
     selected_interface = interface.get()
     selected_client = client.get()
-
-    if not connect or not version:
-        messagebox.showerror(
-            "Ошибка",
-            "Отсутствует строка подключения или версия платформы."
-        )
-        return
 
     exe_path = resolve_1c_path(
         version,
@@ -2076,7 +2598,7 @@ def launch_selected_base(mode="enterprise", extra_params="", run_as_admin=False,
         selected_client,
         selected_interface
     )
-    if not exe_path:
+        if not exe_path:
         messagebox.showerror("Ошибка", f"Не найдена исполняемая программа для платформы {version}.")
         return
 
@@ -2138,22 +2660,32 @@ def launch_selected_base(mode="enterprise", extra_params="", run_as_admin=False,
 
     cmd = f'"{exe_path}" {mode_flag} {arg}'
 
-    username = (base.get("username") or "").strip()
-    password = (base.get("password") or "").strip()
+    saved_params = (base.get("parameters") or "").strip()
+    extra_params = (extra_params or "").strip()
 
-    auth_enterprise = base.get("auth_enterprise") or {}
+    combined_params_lower = f"{saved_params} {extra_params}".lower()
 
-    if not username:
-        username = (auth_enterprise.get("username") or "").strip()
+    params_have_user = "/n" in combined_params_lower
+    params_have_password = "/p" in combined_params_lower
 
-    if not password:
-        password = (auth_enterprise.get("password") or "").strip()
+    if not params_have_user or not params_have_password:
+        username = (base.get("username") or "").strip()
+        password = (base.get("password") or "").strip()
 
-    if username:
-        cmd += f' /N"{username}"'
+        auth_enterprise = base.get("auth_enterprise") or {}
 
-    if password:
-        cmd += f' /P"{password}"'
+        if not username:
+            username = (auth_enterprise.get("username") or "").strip()
+
+        if not password:
+            password = (auth_enterprise.get("password") or "").strip()
+
+        if username and not params_have_user:
+            cmd += f' /N"{username}"'
+
+        if password and not params_have_password:
+            cmd += f' /P"{password}"'
+
 
     if mode == "enterprise":
         if selected_interface == "Обычный":
@@ -2165,9 +2697,14 @@ def launch_selected_base(mode="enterprise", extra_params="", run_as_admin=False,
         elif selected_interface == "Версия 8.5":
             cmd += " /i85"
 
-    if extra_params:
-        cmd += f" {extra_params}"
-        
+    launch_params = " ".join(
+        p for p in [saved_params, extra_params]
+        if p
+    )
+
+    if launch_params:
+        cmd += f" {launch_params}"
+    
     try:
         # status_var.set(cmd)
         status_cmd_var.set(cmd)
@@ -2213,6 +2750,7 @@ def launch_selected_command():
     command = item.get("command", "").strip()
     parameters = item.get("parameters", "").strip()
     workdir = item.get("workdir", "").strip()
+    command_type = item.get("command_type", "").strip()
 
     if not command:
         messagebox.showerror(
@@ -2221,15 +2759,24 @@ def launch_selected_command():
         )
         return
 
+    if command_type == "url" or command.lower().startswith(("http://", "https://")):
+        webbrowser.open(command)
+        return
+
     cmd = f'"{command}"'
 
     if parameters:
         cmd += f" {parameters}"
 
+    launch_cwd = workdir
+
+    if not launch_cwd and os.path.exists(command):
+        launch_cwd = os.path.dirname(command)
+
     try:
         subprocess.Popen(
             cmd,
-            cwd=workdir if workdir else None,
+            cwd=launch_cwd if launch_cwd else None,
             shell=True
         )
 
@@ -2263,10 +2810,14 @@ except Exception as e:
 
 
 starter = load_json()
+auto_import_v8i_on_start()
+
 commands_data = load_commands()
 root.geometry(load_window_geometry())
 favorites = starter.get("favorites", [])
+
 populate_tree()
+update_sort_headers()
 populate_commands_tree()
 load_column_widths()
 root.protocol("WM_DELETE_WINDOW", on_close)
