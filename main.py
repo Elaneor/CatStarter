@@ -2430,6 +2430,7 @@ def assign_platform_to_selected():
 
         platform_versions = sorted(
             versions_tree.get(current_edition, {}).keys(),
+            key=version_key,
             reverse=True
         )
 
