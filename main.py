@@ -1783,6 +1783,12 @@ def open_properties(item_id):
             if normalize_path(item.get("source_v8i", "")) == normalize_path(DEFAULT_V8I):
                 update_local_v8i_field(
                     old_connect,
+                    "Version",
+                    selected_version
+                )
+
+                update_local_v8i_field(
+                    old_connect,
                     "DefaultVersion",
                     selected_version
                 )
@@ -2248,14 +2254,14 @@ def resolve_1c_path(
             if os.path.exists(exe_1cv8):
                 return exe_1cv8
 
-            return None
+            continue
 
         # Явно выбран тонкий клиент
         if selected_client == "Тонкий":
             if os.path.exists(exe_1cv8c):
                 return exe_1cv8c
 
-            return None
+            continue
 
         # Автоматический выбор клиента:
         # для обычного интерфейса нужен толстый клиент,
@@ -2471,11 +2477,19 @@ def assign_platform_to_selected():
             )
 
             if normalize_path(base.get("source_v8i", "")) == normalize_path(DEFAULT_V8I):
-                if update_local_v8i_field(
+                version_updated = update_local_v8i_field(
+                    base.get("connect", ""),
+                    "Version",
+                    selected_version
+                )
+
+                default_version_updated = update_local_v8i_field(
                     base.get("connect", ""),
                     "DefaultVersion",
                     selected_version
-                ):
+                )
+
+                if version_updated or default_version_updated:
                     local_updated += 1
 
         save_json(starter)
