@@ -211,16 +211,16 @@ search_entry.bind("<FocusIn>", clear_search_placeholder)
 
 # сортировка дерева
 def sort_tree_nodes(nodes, reverse=False):
-    groups = [n for n in nodes if n.get("type") == "group"]
-    bases = [n for n in nodes if n.get("type") == "base"]
+    # Сортируем все элементы одного уровня единым алфавитным списком.
+    # Группы и базы больше не разбиваются на два независимых блока.
+    nodes.sort(
+        key=lambda x: (x.get("name") or "").casefold(),
+        reverse=reverse
+    )
 
-    groups.sort(key=lambda x: x.get("name", "").lower(), reverse=reverse)
-    bases.sort(key=lambda x: x.get("name", "").lower(), reverse=reverse)
-
-    for group in groups:
-        sort_tree_nodes(group.get("children", []), reverse)
-
-    nodes[:] = groups + bases
+    for node in nodes:
+        if node.get("type") == "group":
+            sort_tree_nodes(node.get("children", []), reverse)
 
 def update_sort_headers():
     if sort_name_desc:
@@ -679,23 +679,27 @@ def update_status():
     
 
 
-# Поиск по Enter
-def perform_search(event=None):
-    global search_results, search_index
+# Поиск по Enter. Повторный Enter переходит к следующему совпадению.
+search_results = []
+search_index = -1
+search_query = ""
 
-    query = search_var.get().strip().lower()
-    if not query or query == SEARCH_PLACEHOLDER.lower():
+def perform_search(event=None):
+    global search_results, search_index, search_query
+
+    query = search_var.get().strip().casefold()
+    if not query or query == SEARCH_PLACEHOLDER.casefold():
         return "break"
 
-    search_results = collect_search_results(query)
-    search_index = -1
-    find_next()
+    if query != search_query:
+        search_results = collect_search_results(query)
+        search_index = -1
+        search_query = query
 
+    find_next()
     return "break"
 
 search_entry.bind("<Return>", perform_search)
-search_results = []
-search_index = -1
 
 
 def collect_search_results(query):
@@ -704,7 +708,7 @@ def collect_search_results(query):
     def walk(parent=""):
         for iid in tree.get_children(parent):
             item = tree.item(iid)
-            text = item["text"].lower()
+            text = item["text"].casefold()
 
             if query in text:
                 result.append(iid)
@@ -716,15 +720,16 @@ def collect_search_results(query):
 
 
 def find_next(event=None):
-    global search_results, search_index
+    global search_results, search_index, search_query
 
-    query = search_var.get().strip().lower()
-    if not query or query == SEARCH_PLACEHOLDER.lower():
+    query = search_var.get().strip().casefold()
+    if not query or query == SEARCH_PLACEHOLDER.casefold():
         return "break"
 
-    if not search_results:
+    if query != search_query:
         search_results = collect_search_results(query)
         search_index = -1
+        search_query = query
 
     if not search_results:
         return "break"
@@ -732,14 +737,18 @@ def find_next(event=None):
     search_index = (search_index + 1) % len(search_results)
     iid = search_results[search_index]
 
+    # Если совпадение находится в закрытой группе, раскрываем всю ветку.
+    parent = tree.parent(iid)
+    while parent:
+        tree.item(parent, open=True)
+        parent = tree.parent(parent)
+
     tree.see(iid)
     tree.selection_set(iid)
     tree.focus(iid)
+    update_status()
 
     return "break"
-
-
-search_entry.bind("<F3>", find_next)
 
 root.bind("<F3>", lambda e: launch_selected_base("enterprise"))
 root.bind("<F4>", lambda e: launch_selected_base("configurator"))
@@ -1783,12 +1792,6 @@ def open_properties(item_id):
             if normalize_path(item.get("source_v8i", "")) == normalize_path(DEFAULT_V8I):
                 update_local_v8i_field(
                     old_connect,
-                    "Version",
-                    selected_version
-                )
-
-                update_local_v8i_field(
-                    old_connect,
                     "DefaultVersion",
                     selected_version
                 )
@@ -2430,7 +2433,6 @@ def assign_platform_to_selected():
 
         platform_versions = sorted(
             versions_tree.get(current_edition, {}).keys(),
-            key=version_key,
             reverse=True
         )
 
@@ -2478,19 +2480,11 @@ def assign_platform_to_selected():
             )
 
             if normalize_path(base.get("source_v8i", "")) == normalize_path(DEFAULT_V8I):
-                version_updated = update_local_v8i_field(
-                    base.get("connect", ""),
-                    "Version",
-                    selected_version
-                )
-
-                default_version_updated = update_local_v8i_field(
+                if update_local_v8i_field(
                     base.get("connect", ""),
                     "DefaultVersion",
                     selected_version
-                )
-
-                if version_updated or default_version_updated:
+                ):
                     local_updated += 1
 
         save_json(starter)
@@ -2742,11 +2736,25 @@ def launch_selected_base(mode="enterprise", extra_params="", run_as_admin=False,
         update_base_everywhere(
             base.get("name"),
             base.get("connect"),
-            {"last_run": today}
+            {"last_run": today},
+            base.get("id", "")
         )
 
         save_json(starter)
-#        populate_tree()
+
+        # Обновляем дату сразу и в обычной группе, и в Избранном,
+        # не перестраивая всё дерево после запуска.
+        base_id = base.get("id", "")
+        for iid, node in tree_nodes.items():
+            same_by_id = base_id and node.get("id") == base_id
+            same_by_connect = (
+                node.get("name") == base.get("name")
+                and normalize_connect_for_match(node.get("connect"))
+                == normalize_connect_for_match(base.get("connect"))
+            )
+
+            if node.get("type") == "base" and (same_by_id or same_by_connect):
+                tree.set(iid, "last_run", today)
 
     except Exception as e:
         messagebox.showerror("Ошибка запуска", str(e))
