@@ -187,7 +187,10 @@ USER_FIELDS_TO_KEEP = [
     "auth_os",
     "auth_enterprise",
     "auth_designer",
-    "run_as_admin"
+    "run_as_admin",
+    "last_run",
+    "size",
+    "size_updated"
 ]
 
 
