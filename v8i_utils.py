@@ -58,7 +58,7 @@ def parse_v8i_file(path):
             "id": current_data.get("ID", ""),
             "connect": connect,
             "folder": folder,
-            "platform": version or default_version,
+            "platform": default_version or version,
             "version": version,
             "default_version": default_version,
             "external": current_data.get("External", "") == "1",
@@ -274,7 +274,7 @@ def add_local_v8i_empty_group(group_name, parent_folder=""):
         f.write(text.rstrip() + block + "\n")
 
     return True
-    
+
 # переименование группы в локальном ibases.v8i
 def update_local_v8i_folder_path(old_folder_path, new_folder_path):
     local_v8i = normalize_path(DEFAULT_V8I)
@@ -331,7 +331,7 @@ def update_local_v8i_folder_path(old_folder_path, new_folder_path):
             f.write("\n".join(result) + "\n")
 
     return updated_count
-    
+
     # удаление пустой группы из локального ibases.v8i
 def delete_local_v8i_empty_group(group_name, parent_folder=""):
     local_v8i = normalize_path(DEFAULT_V8I)
