@@ -1,9 +1,9 @@
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 import copy
-import json
 import os
 import sys
+from storage_utils import load_json_file, save_json_file
 from v8i_utils import (
     normalize_path,
     parse_v8i_file,
@@ -24,8 +24,7 @@ IMPORT_WARNINGS_PATH = os.path.join(APP_DIR, "import_warnings.txt")
 
 def load_settings():
     if os.path.exists(SETTINGS_PATH):
-        with open(SETTINGS_PATH, "r", encoding="utf-8") as f:
-            data = json.load(f)
+        data = load_json_file(SETTINGS_PATH, lambda: {"v8i_paths": []})
 
         data["v8i_paths"] = [
             normalize_path(p)
@@ -35,10 +34,9 @@ def load_settings():
         return data
 
     return {"v8i_paths": [normalize_path(DEFAULT_V8I)] if os.path.exists(DEFAULT_V8I) else []}
-    
+
 def save_settings(data):
-    with open(SETTINGS_PATH, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=4)
+    save_json_file(SETTINGS_PATH, data)
 
 
 # обновленная модель импорта баз
@@ -194,6 +192,23 @@ USER_FIELDS_TO_KEEP = [
 ]
 
 
+def normalize_connect_key(connect):
+    return (connect or "").strip().rstrip(";").casefold()
+
+
+def get_base_identity_keys(base):
+    keys = []
+    base_id = (base.get("id") or "").strip()
+    connect = normalize_connect_key(base.get("connect", ""))
+
+    if base_id:
+        keys.append(f"id::{base_id}")
+    if connect:
+        keys.append(f"connect::{connect}")
+
+    return keys
+
+
 def collect_user_fields_index(nodes):
     result = {}
 
@@ -203,23 +218,24 @@ def collect_user_fields_index(nodes):
                 walk(item.get("children", []))
 
             elif item.get("type") == "base":
-                key = item.get("id") or item.get("connect")
-                if key:
-                    result[key] = {
-                        field: item.get(field)
-                        for field in USER_FIELDS_TO_KEEP
-                        if field in item
-                    }
+                preserved = {
+                    field: item.get(field)
+                    for field in USER_FIELDS_TO_KEEP
+                    if field in item
+                }
+
+                for key in get_base_identity_keys(item):
+                    result[key] = preserved
 
     walk(nodes)
     return result
 
 
 def restore_user_fields(base, user_fields_index):
-    key = base.get("id") or base.get("connect")
-
-    if key and key in user_fields_index:
-        base.update(user_fields_index[key])
+    for key in get_base_identity_keys(base):
+        if key in user_fields_index:
+            base.update(user_fields_index[key])
+            return
 
 
 
@@ -354,8 +370,10 @@ def open_settings_dialog(master, on_close_callback=None):
             return
 
         if os.path.exists(STARTER_JSON):
-            with open(STARTER_JSON, "r", encoding="utf-8") as f:
-                starter = json.load(f)
+            starter = load_json_file(
+                STARTER_JSON,
+                lambda: {"favorites": [], "groups": []}
+            )
         else:
             starter = {"favorites": [], "groups": []}
 
@@ -365,15 +383,14 @@ def open_settings_dialog(master, on_close_callback=None):
             messagebox.showerror("Импорт", f"Не удалось импортировать список баз.\n{e}")
             return
 
-        with open(STARTER_JSON, "w", encoding="utf-8") as f:
-            json.dump(starter, f, ensure_ascii=False, indent=4)
+        save_json_file(STARTER_JSON, starter)
 
         settings["v8i_paths"] = v8i_paths
         save_settings(settings)
 
         if on_close_callback:
             on_close_callback()
-            
+
         messagebox.showinfo("Импорт завершен", f"Перечитано баз: {read_count}")
         dialog.destroy()
 

@@ -1,6 +1,6 @@
 import ctypes
 import datetime
-import json
+import re
 import tkinter as tk
 from tkinter import ttk, messagebox
 import os
@@ -22,6 +22,7 @@ from settings_dialog import (
 )
 
 from command_dialog import open_command_dialog
+from storage_utils import load_json_file, save_json_file
 from v8i_utils import (
     update_local_v8i_field,
     update_local_v8i_folder_path,
@@ -76,7 +77,7 @@ if getattr(sys, 'frozen', False):
 else:
     APP_DIR = os.path.dirname(os.path.abspath(__file__))
     RESOURCE_DIR = APP_DIR
-    
+
 def load_icon(name, size=(18, 18)):
     path = os.path.join(RESOURCE_DIR, "assets", "icons", name)
     img = Image.open(path).resize(size, Image.Resampling.LANCZOS)
@@ -132,6 +133,7 @@ def get_base_icon_key(item):
 
 STARTER_JSON = os.path.join(APP_DIR, "starter.json")
 COMMANDS_JSON = os.path.join(APP_DIR, "commands.json")
+LAUNCH_HISTORY_JSON = os.path.join(APP_DIR, "launch_history.json")
 
 root = tk.Tk()
 
@@ -210,17 +212,43 @@ def clear_search_placeholder(event=None):
 search_entry.bind("<FocusIn>", clear_search_placeholder)
 
 # сортировка дерева
-def sort_tree_nodes(nodes, reverse=False):
-    # Сортируем все элементы одного уровня единым алфавитным списком.
-    # Группы и базы больше не разбиваются на два независимых блока.
-    nodes.sort(
-        key=lambda x: (x.get("name") or "").casefold(),
-        reverse=reverse
+def natural_name_key(item):
+    """Ключ естественной сортировки: 8.5.10 располагается после 8.5.9."""
+    name = (item.get("name") or "").casefold().lstrip("_").strip()
+    parts = re.split(r"(\d+)", name)
+
+    return tuple(
+        (0, int(part)) if part.isdigit() else (1, part)
+        for part in parts
+        if part
     )
+
+
+def is_priority_group(item):
+    """Группы с начальным подчёркиванием всегда показываются первыми."""
+    return (
+        item.get("type") == "group"
+        and (item.get("name") or "").lstrip().startswith("_")
+    )
+
+
+def sort_tree_nodes(nodes, reverse=False):
+    # Направление сортировки действует внутри двух блоков, но не меняет
+    # приоритет: группы вида _8.4.5 остаются сверху и при сортировке по убыванию.
+    priority_groups = [node for node in nodes if is_priority_group(node)]
+    other_nodes = [node for node in nodes if not is_priority_group(node)]
+
+    priority_groups.sort(key=natural_name_key, reverse=reverse)
+    other_nodes.sort(key=natural_name_key, reverse=reverse)
+    nodes[:] = priority_groups + other_nodes
 
     for node in nodes:
         if node.get("type") == "group":
             sort_tree_nodes(node.get("children", []), reverse)
+
+
+def sort_favorites(reverse=False):
+    favorites.sort(key=natural_name_key, reverse=reverse)
 
 def update_sort_headers():
     if sort_name_desc:
@@ -235,27 +263,15 @@ def update_sort_headers():
 def sort_by_name():
     global sort_name_desc, favorites
 
-    sort_tree_nodes(
-        starter.get("groups", []),
-        reverse=sort_name_desc
-    )
-
-    favorites.sort(
-        key=lambda x: x.get("name", "").lower(),
-        reverse=sort_name_desc
-    )
+    sort_name_desc = not sort_name_desc
+    sort_tree_nodes(starter.get("groups", []), reverse=sort_name_desc)
+    sort_favorites(reverse=sort_name_desc)
 
     starter["favorites"] = favorites
     save_json(starter)
 
     populate_tree()
-
-    if sort_name_desc:
-        tree.heading("#0", text="Наименование ▼", command=sort_by_name)
-    else:
-        tree.heading("#0", text="Наименование ▲", command=sort_by_name)
-
-    sort_name_desc = not sort_name_desc
+    update_sort_headers()
 
 def get_group_path(item_id):
     parts = []
@@ -311,7 +327,7 @@ def create_group():
             parent_folder = get_group_path(selected)
 
         created_in_v8i = add_local_v8i_empty_group(name, parent_folder)
-        print("GROUP CREATED IN V8I:", created_in_v8i, name, parent_folder) 
+        print("GROUP CREATED IN V8I:", created_in_v8i, name, parent_folder)
 
         if selected in tree_nodes and tree_nodes[selected].get("type") == "group":
             tree_nodes[selected].setdefault("children", []).append(new_group)
@@ -353,8 +369,8 @@ btn_filter = ttk.Button(
 ToolTip(btn_filter, "Отбор по версии платформы")
 
 btn_group = ttk.Button(
-    toolbar, 
-    text="Создать группу", 
+    toolbar,
+    text="Создать группу",
     command=create_group)
 ToolTip(btn_group, "Создать группу")
 
@@ -402,6 +418,33 @@ tree.heading("last_run", text="Дата")
 tree.heading("size", text="Размер")
 
 tree.pack(fill="both", expand=True)
+
+# История запусков информационных баз
+history_columns = ("launched_at", "platform")
+history_tree = ttk.Treeview(
+    history_tab,
+    columns=history_columns,
+    show="tree headings",
+    selectmode="browse"
+)
+
+history_tree.heading("#0", text="Информационная база")
+history_tree.heading("launched_at", text="Дата запуска")
+history_tree.heading("platform", text="Платформа")
+
+history_tree.column("#0", width=360)
+history_tree.column("launched_at", width=155, stretch=False)
+history_tree.column("platform", width=130, stretch=False)
+
+history_scrollbar = ttk.Scrollbar(
+    history_tab,
+    orient="vertical",
+    command=history_tree.yview
+)
+history_tree.configure(yscrollcommand=history_scrollbar.set)
+
+history_tree.pack(side="left", fill="both", expand=True)
+history_scrollbar.pack(side="right", fill="y")
 
 # Панель инструментов для команд
 commands_toolbar = ttk.Frame(commands_tab)
@@ -662,7 +705,7 @@ def load_column_widths():
 
     if "size" in widths:
         tree.column("size", width=widths["size"])
-        
+
 def update_status():
     selected = tree.focus()
 
@@ -676,13 +719,29 @@ def update_status():
     status_name_var.set(base.get("name", ""))
     status_connect_var.set(base.get("connect", ""))
     status_cmd_var.set("")
-    
+
+    if base.get("type") == "base":
+        restore_base_launch_settings(base)
+
 
 
 # Поиск по Enter. Повторный Enter переходит к следующему совпадению.
 search_results = []
 search_index = -1
 search_query = ""
+
+
+def reset_search_state(*args):
+    """Сбрасывает кэш поиска после изменения запроса или перестроения дерева."""
+    global search_results, search_index, search_query
+
+    search_results = []
+    search_index = -1
+    search_query = ""
+
+
+search_var.trace_add("write", reset_search_state)
+
 
 def perform_search(event=None):
     global search_results, search_index, search_query
@@ -707,8 +766,15 @@ def collect_search_results(query):
 
     def walk(parent=""):
         for iid in tree.get_children(parent):
-            item = tree.item(iid)
-            text = item["text"].casefold()
+            tree_item = tree.item(iid)
+            data = tree_nodes.get(iid, {})
+            searchable_values = (
+                tree_item.get("text", ""),
+                data.get("name", ""),
+                data.get("connect", ""),
+                data.get("platform", "")
+            )
+            text = "\n".join(str(value) for value in searchable_values).casefold()
 
             if query in text:
                 result.append(iid)
@@ -726,7 +792,10 @@ def find_next(event=None):
     if not query or query == SEARCH_PLACEHOLDER.casefold():
         return "break"
 
-    if query != search_query:
+    if (
+        query != search_query
+        or any(not tree.exists(iid) for iid in search_results)
+    ):
         search_results = collect_search_results(query)
         search_index = -1
         search_query = query
@@ -778,7 +847,7 @@ def reload_data():
     global starter, favorites
 
     current_open_nodes = get_open_nodes()
-    
+
     starter = load_json()
     starter["open_nodes"] = current_open_nodes
     favorites = starter.get("favorites", [])
@@ -802,7 +871,7 @@ def reload_data():
 
                     if node.get("size_updated") == today:
                         continue
-                        
+
                     db_file = os.path.join(path, "1Cv8.1CD")
 
                     if os.path.exists(db_file):
@@ -1083,6 +1152,7 @@ ttk.Combobox(
 starter = {}
 favorites = []
 tree_nodes = {}
+history_nodes = {}
 sort_name_desc = False
 commands_nodes = {}
 
@@ -1121,18 +1191,268 @@ def on_close():
     root.destroy()
 
 def load_json():
-    if not os.path.exists(STARTER_JSON):
-        return {
+    return load_json_file(
+        STARTER_JSON,
+        lambda: {
             "favorites": [],
             "groups": [],
             "window_geometry": "900x600"
         }
-    with open(STARTER_JSON, "r", encoding="utf-8") as f:
-        return json.load(f)
+    )
 
 def save_json(data):
-    with open(STARTER_JSON, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=4)
+    save_json_file(STARTER_JSON, data)
+
+
+def load_launch_history():
+    def default():
+        return {
+            "history": [],
+            "base_settings": {}
+        }
+
+    try:
+        data = load_json_file(LAUNCH_HISTORY_JSON, default)
+    except Exception:
+        return default()
+
+    data.setdefault("history", [])
+    data.setdefault("base_settings", {})
+    return data
+
+
+def save_launch_history():
+    save_json_file(LAUNCH_HISTORY_JSON, launch_history_data)
+
+
+def get_base_settings_key(base):
+    connect = normalize_connect_for_match(base.get("connect", ""))
+
+    if connect:
+        return f"connect::{connect}"
+
+    base_id = (base.get("id") or "").strip()
+    if base_id:
+        return f"id::{base_id}"
+
+    return f"name::{(base.get('name') or '').strip().lower()}"
+
+
+def save_base_launch_settings(base, selected_interface, selected_client):
+    key = get_base_settings_key(base)
+
+    launch_history_data.setdefault("base_settings", {})[key] = {
+        "interface": selected_interface or "Auto",
+        "client": selected_client or "Auto"
+    }
+
+    save_launch_history()
+
+
+def restore_base_launch_settings(base):
+    key = get_base_settings_key(base)
+    saved = launch_history_data.get("base_settings", {}).get(key, {})
+
+    interface_value = saved.get("interface")
+    client_value = saved.get("client")
+
+    if not interface_value:
+        interface_value = base.get("interface", "Auto") or "Auto"
+
+    if interface_value not in ("Auto", "Версия 8.5", "Такси", "Обычный"):
+        interface_value = "Auto"
+
+    if client_value not in ("Auto", "Толстый", "Тонкий"):
+        client_value = "Auto"
+
+    interface.set(interface_value)
+    client.set(client_value)
+
+
+def add_launch_history_entry(base, version, selected_interface, selected_client, mode):
+    entry = {
+        "base_name": base.get("name", ""),
+        "connect": base.get("connect", ""),
+        "base_id": base.get("id", ""),
+        "launched_at": datetime.datetime.now().isoformat(timespec="seconds"),
+        "platform": version,
+        "interface": selected_interface,
+        "client": selected_client,
+        "mode": mode
+    }
+
+    launch_history_data.setdefault("history", []).append(entry)
+    save_launch_history()
+    populate_history_tree()
+
+
+def populate_history_tree():
+    history_nodes.clear()
+    history_tree.delete(*history_tree.get_children())
+
+    # Самые свежие запуски показываем сверху.
+    for index, entry in enumerate(reversed(launch_history_data.get("history", []))):
+        launched_at = entry.get("launched_at", "")
+
+        try:
+            dt = datetime.datetime.fromisoformat(launched_at)
+            launched_at_text = dt.strftime("%d.%m.%Y %H:%M:%S")
+        except Exception:
+            launched_at_text = launched_at
+
+        iid = f"history_{index}"
+        history_nodes[iid] = entry
+
+        history_tree.insert(
+            "",
+            "end",
+            iid=iid,
+            text=entry.get("base_name", ""),
+            values=(
+                launched_at_text,
+                entry.get("platform", "")
+            )
+        )
+
+
+def get_selected_history_entry():
+    selected = history_tree.focus()
+
+    if selected and selected in history_nodes:
+        return history_nodes[selected]
+
+    selection = history_tree.selection()
+    if selection:
+        return history_nodes.get(selection[0])
+
+    return None
+
+
+def history_tab_is_active():
+    return main_notebook.select() == str(history_tab)
+
+
+def get_launch_context():
+    """Возвращает текущую базу и, если нужно, выбранную запись истории."""
+    if history_tab_is_active():
+        history_entry = get_selected_history_entry()
+
+        if not history_entry:
+            messagebox.showinfo("Выбор", "Выберите запуск в истории")
+            return None, None
+
+        base = find_base_in_starter(
+            history_entry.get("base_name", ""),
+            history_entry.get("connect", ""),
+            history_entry.get("base_id", "")
+        )
+
+        if not base:
+            messagebox.showerror(
+                "История запусков",
+                "Информационная база из выбранной записи больше не найдена в списке баз."
+            )
+            return None, None
+
+        return base, history_entry
+
+    selected = get_selected_tree_item()
+    if not selected:
+        messagebox.showinfo("Выбор", "Выберите базу")
+        return None, None
+
+    base = tree_nodes[selected]
+    if base.get("type") != "base":
+        messagebox.showinfo("Выбор", "Выберите базу")
+        return None, None
+
+    return base, None
+
+
+def update_history_status():
+    entry = get_selected_history_entry()
+
+    if not entry:
+        status_name_var.set("")
+        status_connect_var.set("")
+        status_cmd_var.set("")
+        return
+
+    status_name_var.set(entry.get("base_name", ""))
+    status_connect_var.set(entry.get("connect", ""))
+    status_cmd_var.set("")
+
+    interface_value = entry.get("interface", "Auto") or "Auto"
+    client_value = entry.get("client", "Auto") or "Auto"
+
+    if interface_value in ("Auto", "Версия 8.5", "Такси", "Обычный"):
+        interface.set(interface_value)
+
+    if client_value in ("Auto", "Толстый", "Тонкий"):
+        client.set(client_value)
+
+
+def update_active_tab_status(event=None):
+    if history_tab_is_active():
+        update_history_status()
+    elif main_notebook.select() == str(bases_tab):
+        update_status()
+
+
+def restore_last_run_from_history():
+    """Восстанавливает колонку «Дата» из постоянной истории запусков."""
+    latest_by_key = {}
+
+    for entry in launch_history_data.get("history", []):
+        launched_at = (entry.get("launched_at") or "").strip()
+        launch_date = launched_at[:10]
+
+        if not launch_date:
+            continue
+
+        connect = normalize_connect_for_match(entry.get("connect", ""))
+        base_id = (entry.get("base_id") or "").strip()
+
+        keys = []
+        if connect:
+            keys.append(f"connect::{connect}")
+        if base_id:
+            keys.append(f"id::{base_id}")
+
+        for key in keys:
+            if launch_date > latest_by_key.get(key, ""):
+                latest_by_key[key] = launch_date
+
+    changed = False
+
+    def restore(nodes):
+        nonlocal changed
+
+        for node in nodes:
+            if node.get("type") == "group":
+                restore(node.get("children", []))
+                continue
+
+            if node.get("type") != "base":
+                continue
+
+            connect = normalize_connect_for_match(node.get("connect", ""))
+            base_id = (node.get("id") or "").strip()
+            candidates = []
+
+            if connect:
+                candidates.append(latest_by_key.get(f"connect::{connect}", ""))
+            if base_id:
+                candidates.append(latest_by_key.get(f"id::{base_id}", ""))
+
+            history_date = max(candidates, default="")
+            if history_date and history_date > (node.get("last_run") or ""):
+                node["last_run"] = history_date
+                changed = True
+
+    restore(starter.get("groups", []))
+    restore(starter.get("favorites", []))
+    return changed
 
 # функции для автообновления баз из списков инфобаз
 def auto_import_v8i_on_start():
@@ -1150,16 +1470,11 @@ def auto_import_v8i_on_start():
 
 # Загрузка списка команд для вкладки "Команды"
 def load_commands():
-    if not os.path.exists(COMMANDS_JSON):
-        return {"groups": []}
-
-    with open(COMMANDS_JSON, "r", encoding="utf-8") as f:
-        return json.load(f)
+    return load_json_file(COMMANDS_JSON, lambda: {"groups": []})
 
 
 def save_commands(data):
-    with open(COMMANDS_JSON, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=4)
+    save_json_file(COMMANDS_JSON, data)
 
 def format_size(size_bytes):
     for unit in ["Б", "КБ", "МБ", "ГБ", "ТБ"]:
@@ -1280,16 +1595,8 @@ def insert_children(parent, children):
                 insert_item(parent, child)
 
 def open_launch_params_dialog(mode="enterprise", force_auth=False):
-    selected = tree.focus()
-
-    if not selected or selected not in tree_nodes:
-        messagebox.showinfo("Выбор", "Выберите базу")
-        return
-
-    base = tree_nodes[selected]
-
-    if base.get("type") != "base":
-        messagebox.showinfo("Выбор", "Выберите базу")
+    base, history_entry = get_launch_context()
+    if not base:
         return
 
     mode_title = "1С:Предприятие" if mode == "enterprise" else "Конфигуратор"
@@ -1313,13 +1620,13 @@ def open_launch_params_dialog(mode="enterprise", force_auth=False):
     ttk.Label(dialog, text="Строка параметров").pack(anchor="w", padx=10)
 
     params_var = tk.StringVar(value=base.get("parameters", ""))
-    
+
     entry_params = ttk.Entry(dialog, textvariable=params_var)
     entry_params.pack(fill="x", padx=10, pady=(2, 8))
-    
+
     if force_auth:
         dialog.after(100, entry_params.focus_set)
-    
+
     entry_params.bind("<Control-v>", lambda e: entry_params.event_generate("<<Paste>>"))
     entry_params.bind("<Control-V>", lambda e: entry_params.event_generate("<<Paste>>"))
 
@@ -1443,7 +1750,12 @@ def open_launch_params_dialog(mode="enterprise", force_auth=False):
     ).pack(side="left")
 
     versions = get_installed_1c_versions()
-    version_var = tk.StringVar(value=base.get("platform", ""))
+    initial_version = (
+        history_entry.get("platform", "")
+        if history_entry
+        else base.get("platform", "")
+    )
+    version_var = tk.StringVar(value=initial_version)
 
     version_combo = ttk.Combobox(
         version_frame,
@@ -1473,6 +1785,12 @@ def open_launch_params_dialog(mode="enterprise", force_auth=False):
     ttk.Button(bottom, text="Продолжить", command=continue_launch).pack(side="right", padx=(0, 8))
 
 def populate_tree():
+    # Сортировка применяется при каждом построении дерева, в том числе сразу
+    # после запуска приложения и после автоимпорта .v8i.
+    sort_tree_nodes(starter.get("groups", []), reverse=sort_name_desc)
+    sort_favorites(reverse=sort_name_desc)
+
+    reset_search_state()
     tree_nodes.clear()
     tree.delete(*tree.get_children())
 
@@ -1754,6 +2072,30 @@ def add_to_favorites():
 def normalize_connect_for_match(connect):
     return (connect or "").strip().rstrip(";").lower()
 
+def find_base_in_starter(name, connect, base_id=""):
+    normalized_connect = normalize_connect_for_match(connect)
+
+    def walk(nodes):
+        for node in nodes:
+            if node.get("type") == "group":
+                found = walk(node.get("children", []))
+                if found:
+                    return found
+            elif node.get("type") == "base":
+                if base_id and node.get("id") and node.get("id") == base_id:
+                    return node
+
+                if (
+                    node.get("name") == name
+                    and normalize_connect_for_match(node.get("connect")) == normalized_connect
+                ):
+                    return node
+
+        return None
+
+    return walk(starter.get("groups", []))
+
+
 def update_base_everywhere(name, connect, updates, base_id=""):
     def is_same_base(node):
         if base_id and node.get("id") and node.get("id") == base_id:
@@ -1981,7 +2323,7 @@ def move_selected_nodes():
                 moved.append(removed)
 
         target_group.setdefault("children", []).extend(moved)
-        
+
         target_folder = target_path.replace("\\", "/")
 
         if target_folder.startswith("Информационные базы/"):
@@ -2000,7 +2342,7 @@ def move_selected_nodes():
                         "Folder",
                         target_folder_value
                     )
-        
+
         starter["open_nodes"] = get_open_nodes()
         starter["open_nodes"].append(target_id)
 
@@ -2472,12 +2814,28 @@ def assign_platform_to_selected():
         local_updated = 0
 
         for base in bases:
+            version_updates = {
+                "platform": selected_version,
+                "version": selected_version,
+                "default_version": selected_version
+            }
+
+            base.update(version_updates)
+
             update_base_everywhere(
                 base.get("name"),
                 base.get("connect"),
-                {"platform": selected_version},
+                version_updates,
                 base.get("id", "")
             )
+
+            # Явно синхронизируем копию базы в Избранном.
+            # Это важно и для старых записей, у которых ID мог не совпасть
+            # с ID той же базы в основном дереве.
+            base_connect = normalize_connect_for_match(base.get("connect", ""))
+            for fav in starter.get("favorites", []):
+                if normalize_connect_for_match(fav.get("connect", "")) == base_connect:
+                    fav.update(version_updates)
 
             if normalize_path(base.get("source_v8i", "")) == normalize_path(DEFAULT_V8I):
                 if update_local_v8i_field(
@@ -2524,7 +2882,7 @@ btn_platform = ttk.Button(
     command=assign_platform_to_selected
 )
 ToolTip(btn_platform, "Назначить версию платформы")
-btn_platform.pack(side="left", padx=2) 
+btn_platform.pack(side="left", padx=2)
 
 toolbar.icons = [
     icon_create,
@@ -2556,7 +2914,7 @@ def open_selected_properties():
     if item.get("type") == "group":
         rename_selected_group()
         return
-        
+
 # Получить выбранный элемент дерева
 def get_selected_tree_item():
     selected = tree.focus()
@@ -2573,33 +2931,30 @@ def get_selected_tree_item():
             return selected
 
     return ""
-   
-# Запуск выбранной информационной базы   
+
+# Запуск выбранной информационной базы
 def launch_selected_base(mode="enterprise", extra_params="", run_as_admin=False, forced_version=""):
-    selected = get_selected_tree_item()
-
-    if not selected:
-        messagebox.showinfo("Выбор", "Выберите базу")
+    base, history_entry = get_launch_context()
+    if not base:
         return
 
-    base = tree_nodes[selected]
-
-    if base.get("type") != "base":
-        messagebox.showinfo("Выбор", "Выберите базу")
-        return
-    
     base_run_as_admin = base.get("run_as_admin", False)
     run_as_admin = run_as_admin or base_run_as_admin
-    
+
     connect = base.get("connect", "")
-    version = forced_version or base.get("platform", "")
+    history_version = history_entry.get("platform", "") if history_entry else ""
+    version = forced_version or history_version or base.get("platform", "")
 
     if not connect or not version:
         messagebox.showerror("Ошибка", "Отсутствует строка подключения или версия платформы.")
         return
 
-    selected_interface = interface.get()
-    selected_client = client.get()
+    if history_entry:
+        selected_interface = history_entry.get("interface", "Auto") or "Auto"
+        selected_client = history_entry.get("client", "Auto") or "Auto"
+    else:
+        selected_interface = interface.get()
+        selected_client = client.get()
 
     exe_path = resolve_1c_path(
         version,
@@ -2610,6 +2965,19 @@ def launch_selected_base(mode="enterprise", extra_params="", run_as_admin=False,
     if not exe_path:
         messagebox.showerror("Ошибка", f"Не найдена исполняемая программа для платформы {version}.")
         return
+
+    if is_exact_platform_build(version):
+        expected_dir = os.path.normcase(
+            os.path.normpath(os.path.join("1cv8", version, "bin"))
+        )
+        actual_path = os.path.normcase(os.path.normpath(exe_path))
+
+        if expected_dir not in actual_path:
+            messagebox.showerror(
+                "Ошибка версии платформы",
+                f"Выбрана платформа {version}, но для запуска найден другой путь:\n\n{exe_path}"
+            )
+            return
 
     connect_lower = connect.lower()
 
@@ -2661,7 +3029,7 @@ def launch_selected_base(mode="enterprise", extra_params="", run_as_admin=False,
             path = path[1:-1]
 
         arg = f'/F"{path}"'
-  
+
 
     mode_flag = "ENTERPRISE"
     if mode == "configurator":
@@ -2713,7 +3081,13 @@ def launch_selected_base(mode="enterprise", extra_params="", run_as_admin=False,
 
     if launch_params:
         cmd += f" {launch_params}"
-    
+
+    # Если пользователь выбрал точную сборку платформы,
+    # запрещаем клиенту 1С автоматически переключаться
+    # на другую установленную версию.
+    if is_exact_platform_build(version):
+        cmd += " /AppAutoCheckVersion-"
+
     try:
         # status_var.set(cmd)
         status_cmd_var.set(cmd)
@@ -2730,6 +3104,21 @@ def launch_selected_base(mode="enterprise", extra_params="", run_as_admin=False,
             )
         else:
             subprocess.Popen(cmd, shell=True)
+
+        # Сохраняем последние выбранные для этой базы параметры запуска
+        # и отдельную строку в истории каждого успешного запуска.
+        save_base_launch_settings(
+            base,
+            selected_interface,
+            selected_client
+        )
+        add_launch_history_entry(
+            base,
+            version,
+            selected_interface,
+            selected_client,
+            mode
+        )
 
         today = datetime.date.today().isoformat()
 
@@ -2812,6 +3201,9 @@ def launch_selected_command():
 tree.bind("<<TreeviewSelect>>", lambda e: update_status())
 tree.bind("<Button-3>", show_context_menu)
 tree.bind("<Double-1>", lambda e: launch_selected_base())
+history_tree.bind("<<TreeviewSelect>>", lambda e: update_history_status())
+history_tree.bind("<Double-1>", lambda e: launch_selected_base())
+main_notebook.bind("<<NotebookTabChanged>>", update_active_tab_status)
 commands_tree.bind(
     "<Double-1>",
     lambda e: launch_selected_command()
@@ -2826,21 +3218,47 @@ try:
     label_sin = ttk.Label(frame_right, image=sin_photo, cursor="hand2")
     label_sin.image = sin_photo
     label_sin.pack(pady=10, anchor="se")
-    label_sin.bind("<Button-1>", lambda e: webbrowser.open("https://t.me/platform_morning"))
+
+    def taliesin_says_meow(event=None):
+        bubble = tk.Toplevel(root)
+        bubble.wm_overrideredirect(True)
+        bubble.attributes("-topmost", True)
+
+        x = label_sin.winfo_rootx() + 35
+        y = label_sin.winfo_rooty() - 28
+        bubble.geometry(f"+{x}+{y}")
+
+        ttk.Label(
+            bubble,
+            text="Талиесин: Мяу",
+            padding=(10, 5)
+        ).pack()
+
+        bubble.after(1400, bubble.destroy)
+
+    label_sin.bind("<Button-1>", taliesin_says_meow)
 except Exception as e:
     print(f"Син не загрузился: {e}")
 
 
 
+launch_history_data = load_launch_history()
 starter = load_json()
 auto_import_v8i_on_start()
 
+# В старых версиях автоимпорт обнулял last_run. История запусков теперь
+# является дополнительным источником для восстановления этой колонки.
+if restore_last_run_from_history():
+    save_json(starter)
+
 commands_data = load_commands()
+
 root.geometry(load_window_geometry())
 favorites = starter.get("favorites", [])
 
 populate_tree()
 update_sort_headers()
+populate_history_tree()
 populate_commands_tree()
 load_column_widths()
 root.protocol("WM_DELETE_WINDOW", on_close)
