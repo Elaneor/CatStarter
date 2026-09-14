@@ -1152,6 +1152,7 @@ ttk.Combobox(
 starter = {}
 favorites = []
 tree_nodes = {}
+history_nodes = {}
 sort_name_desc = False
 commands_nodes = {}
 
@@ -1286,6 +1287,7 @@ def add_launch_history_entry(base, version, selected_interface, selected_client,
 
 
 def populate_history_tree():
+    history_nodes.clear()
     history_tree.delete(*history_tree.get_children())
 
     # Самые свежие запуски показываем сверху.
@@ -1298,16 +1300,103 @@ def populate_history_tree():
         except Exception:
             launched_at_text = launched_at
 
+        iid = f"history_{index}"
+        history_nodes[iid] = entry
+
         history_tree.insert(
             "",
             "end",
-            iid=f"history_{index}",
+            iid=iid,
             text=entry.get("base_name", ""),
             values=(
                 launched_at_text,
                 entry.get("platform", "")
             )
         )
+
+
+def get_selected_history_entry():
+    selected = history_tree.focus()
+
+    if selected and selected in history_nodes:
+        return history_nodes[selected]
+
+    selection = history_tree.selection()
+    if selection:
+        return history_nodes.get(selection[0])
+
+    return None
+
+
+def history_tab_is_active():
+    return main_notebook.select() == str(history_tab)
+
+
+def get_launch_context():
+    """Возвращает текущую базу и, если нужно, выбранную запись истории."""
+    if history_tab_is_active():
+        history_entry = get_selected_history_entry()
+
+        if not history_entry:
+            messagebox.showinfo("Выбор", "Выберите запуск в истории")
+            return None, None
+
+        base = find_base_in_starter(
+            history_entry.get("base_name", ""),
+            history_entry.get("connect", ""),
+            history_entry.get("base_id", "")
+        )
+
+        if not base:
+            messagebox.showerror(
+                "История запусков",
+                "Информационная база из выбранной записи больше не найдена в списке баз."
+            )
+            return None, None
+
+        return base, history_entry
+
+    selected = get_selected_tree_item()
+    if not selected:
+        messagebox.showinfo("Выбор", "Выберите базу")
+        return None, None
+
+    base = tree_nodes[selected]
+    if base.get("type") != "base":
+        messagebox.showinfo("Выбор", "Выберите базу")
+        return None, None
+
+    return base, None
+
+
+def update_history_status():
+    entry = get_selected_history_entry()
+
+    if not entry:
+        status_name_var.set("")
+        status_connect_var.set("")
+        status_cmd_var.set("")
+        return
+
+    status_name_var.set(entry.get("base_name", ""))
+    status_connect_var.set(entry.get("connect", ""))
+    status_cmd_var.set("")
+
+    interface_value = entry.get("interface", "Auto") or "Auto"
+    client_value = entry.get("client", "Auto") or "Auto"
+
+    if interface_value in ("Auto", "Версия 8.5", "Такси", "Обычный"):
+        interface.set(interface_value)
+
+    if client_value in ("Auto", "Толстый", "Тонкий"):
+        client.set(client_value)
+
+
+def update_active_tab_status(event=None):
+    if history_tab_is_active():
+        update_history_status()
+    elif main_notebook.select() == str(bases_tab):
+        update_status()
 
 
 def restore_last_run_from_history():
@@ -1506,16 +1595,8 @@ def insert_children(parent, children):
                 insert_item(parent, child)
 
 def open_launch_params_dialog(mode="enterprise", force_auth=False):
-    selected = tree.focus()
-
-    if not selected or selected not in tree_nodes:
-        messagebox.showinfo("Выбор", "Выберите базу")
-        return
-
-    base = tree_nodes[selected]
-
-    if base.get("type") != "base":
-        messagebox.showinfo("Выбор", "Выберите базу")
+    base, history_entry = get_launch_context()
+    if not base:
         return
 
     mode_title = "1С:Предприятие" if mode == "enterprise" else "Конфигуратор"
@@ -1669,7 +1750,12 @@ def open_launch_params_dialog(mode="enterprise", force_auth=False):
     ).pack(side="left")
 
     versions = get_installed_1c_versions()
-    version_var = tk.StringVar(value=base.get("platform", ""))
+    initial_version = (
+        history_entry.get("platform", "")
+        if history_entry
+        else base.get("platform", "")
+    )
+    version_var = tk.StringVar(value=initial_version)
 
     version_combo = ttk.Combobox(
         version_frame,
@@ -2848,30 +2934,27 @@ def get_selected_tree_item():
 
 # Запуск выбранной информационной базы
 def launch_selected_base(mode="enterprise", extra_params="", run_as_admin=False, forced_version=""):
-    selected = get_selected_tree_item()
-
-    if not selected:
-        messagebox.showinfo("Выбор", "Выберите базу")
-        return
-
-    base = tree_nodes[selected]
-
-    if base.get("type") != "base":
-        messagebox.showinfo("Выбор", "Выберите базу")
+    base, history_entry = get_launch_context()
+    if not base:
         return
 
     base_run_as_admin = base.get("run_as_admin", False)
     run_as_admin = run_as_admin or base_run_as_admin
 
     connect = base.get("connect", "")
-    version = forced_version or base.get("platform", "")
+    history_version = history_entry.get("platform", "") if history_entry else ""
+    version = forced_version or history_version or base.get("platform", "")
 
     if not connect or not version:
         messagebox.showerror("Ошибка", "Отсутствует строка подключения или версия платформы.")
         return
 
-    selected_interface = interface.get()
-    selected_client = client.get()
+    if history_entry:
+        selected_interface = history_entry.get("interface", "Auto") or "Auto"
+        selected_client = history_entry.get("client", "Auto") or "Auto"
+    else:
+        selected_interface = interface.get()
+        selected_client = client.get()
 
     exe_path = resolve_1c_path(
         version,
@@ -3118,6 +3201,9 @@ def launch_selected_command():
 tree.bind("<<TreeviewSelect>>", lambda e: update_status())
 tree.bind("<Button-3>", show_context_menu)
 tree.bind("<Double-1>", lambda e: launch_selected_base())
+history_tree.bind("<<TreeviewSelect>>", lambda e: update_history_status())
+history_tree.bind("<Double-1>", lambda e: launch_selected_base())
+main_notebook.bind("<<NotebookTabChanged>>", update_active_tab_status)
 commands_tree.bind(
     "<Double-1>",
     lambda e: launch_selected_command()
