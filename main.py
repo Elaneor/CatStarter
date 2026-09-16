@@ -2932,6 +2932,37 @@ def get_selected_tree_item():
 
     return ""
 
+
+def remove_conflicting_interface_params(params):
+    """Удаляет интерфейсные ключи, если режим выбран в панели запуска."""
+    return re.sub(
+        r"(?i)(?<!\S)/(?:RunModeOrdinaryApplication|RunModeManagedApplication|iTaxi|i85)(?=\s|$)",
+        "",
+        params or ""
+    ).strip()
+
+
+def get_interface_launch_flags(selected_interface, exe_path):
+    """Возвращает согласованные ключи режима приложения и интерфейса."""
+    flags = []
+    executable_name = os.path.basename(exe_path.replace("\\", "/")).casefold()
+    uses_thick_client = executable_name == "1cv8.exe"
+
+    if selected_interface == "Обычный":
+        flags.append("/RunModeOrdinaryApplication")
+
+    elif selected_interface == "Такси":
+        if uses_thick_client:
+            flags.append("/RunModeManagedApplication")
+        flags.append("/iTaxi")
+
+    elif selected_interface == "Версия 8.5":
+        if uses_thick_client:
+            flags.append("/RunModeManagedApplication")
+        flags.append("/i85")
+
+    return flags
+
 # Запуск выбранной информационной базы
 def launch_selected_base(mode="enterprise", extra_params="", run_as_admin=False, forced_version=""):
     base, history_entry = get_launch_context()
@@ -3040,6 +3071,12 @@ def launch_selected_base(mode="enterprise", extra_params="", run_as_admin=False,
     saved_params = (base.get("parameters") or "").strip()
     extra_params = (extra_params or "").strip()
 
+    # Явно выбранный интерфейс имеет приоритет над интерфейсными ключами,
+    # сохранёнными в AdditionalParameters или введёнными в окне запуска.
+    if mode == "enterprise" and selected_interface != "Auto":
+        saved_params = remove_conflicting_interface_params(saved_params)
+        extra_params = remove_conflicting_interface_params(extra_params)
+
     combined_params_lower = f"{saved_params} {extra_params}".lower()
 
     params_have_user = "/n" in combined_params_lower
@@ -3065,14 +3102,12 @@ def launch_selected_base(mode="enterprise", extra_params="", run_as_admin=False,
 
 
     if mode == "enterprise":
-        if selected_interface == "Обычный":
-            cmd += " /RunModeOrdinaryApplication"
-
-        elif selected_interface == "Такси":
-            cmd += " /iTaxi"
-
-        elif selected_interface == "Версия 8.5":
-            cmd += " /i85"
+        interface_flags = get_interface_launch_flags(
+            selected_interface,
+            exe_path
+        )
+        if interface_flags:
+            cmd += " " + " ".join(interface_flags)
 
     launch_params = " ".join(
         p for p in [saved_params, extra_params]
