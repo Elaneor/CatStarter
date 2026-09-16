@@ -2963,6 +2963,14 @@ def get_interface_launch_flags(selected_interface, exe_path):
 
     return flags
 
+
+def has_app_auto_check_version_param(params):
+    """Проверяет, задан ли режим автоподбора версии явно для базы."""
+    return bool(re.search(
+        r"(?i)(?<!\S)/AppAutoCheckVersion(?:[+-])?(?=\s|$)",
+        params or ""
+    ))
+
 # Запуск выбранной информационной базы
 def launch_selected_base(mode="enterprise", extra_params="", run_as_admin=False, forced_version=""):
     base, history_entry = get_launch_context()
@@ -3114,13 +3122,22 @@ def launch_selected_base(mode="enterprise", extra_params="", run_as_admin=False,
         if p
     )
 
+    has_explicit_auto_check_version = has_app_auto_check_version_param(
+        launch_params
+    )
+
     if launch_params:
         cmd += f" {launch_params}"
 
     # Если пользователь выбрал точную сборку платформы,
     # запрещаем клиенту 1С автоматически переключаться
-    # на другую установленную версию.
-    if is_exact_platform_build(version):
+    # на другую установленную версию. Явный параметр конкретной базы
+    # (/AppAutoCheckVersion, /AppAutoCheckVersion+ или вариант с минусом)
+    # всегда имеет приоритет над этим значением по умолчанию.
+    if (
+        is_exact_platform_build(version)
+        and not has_explicit_auto_check_version
+    ):
         cmd += " /AppAutoCheckVersion-"
 
     try:
