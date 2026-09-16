@@ -2562,64 +2562,88 @@ def get_installed_1c_versions():
 
     return sorted(set(versions), key=version_key, reverse=True)
 
+
+def get_matching_installed_versions(version):
+    """Возвращает установленные сборки для точной или общей версии."""
+    version = (version or "").strip()
+    if not version:
+        return []
+
+    if is_exact_platform_build(version):
+        return [version]
+
+    version_prefix = f"{version}."
+    return [
+        installed_version
+        for installed_version in get_installed_1c_versions()
+        if (
+            installed_version == version
+            or installed_version.startswith(version_prefix)
+        )
+    ]
+
+
 def resolve_1c_path(
     version,
     mode="enterprise",
     selected_client="Auto",
     selected_interface="Auto"
 ):
-    base_dirs = [
-        os.path.join(
-            os.environ.get("PROGRAMFILES", r"C:\Program Files"),
-            "1cv8",
-            version,
-            "bin"
-        ),
-        os.path.join(
-            os.environ.get("PROGRAMFILES(X86)", r"C:\Program Files (x86)"),
-            "1cv8",
-            version,
-            "bin"
-        )
-    ]
+    versions_to_try = get_matching_installed_versions(version)
 
-    for base_dir in base_dirs:
-        exe_1cv8 = os.path.join(base_dir, "1cv8.exe")
-        exe_1cv8c = os.path.join(base_dir, "1cv8c.exe")
+    for installed_version in versions_to_try:
+        base_dirs = [
+            os.path.join(
+                os.environ.get("PROGRAMFILES", r"C:\Program Files"),
+                "1cv8",
+                installed_version,
+                "bin"
+            ),
+            os.path.join(
+                os.environ.get("PROGRAMFILES(X86)", r"C:\Program Files (x86)"),
+                "1cv8",
+                installed_version,
+                "bin"
+            )
+        ]
 
-        # Конфигуратор всегда запускается через 1cv8.exe
-        if mode == "configurator":
-            if os.path.exists(exe_1cv8):
-                return exe_1cv8
+        for base_dir in base_dirs:
+            exe_1cv8 = os.path.join(base_dir, "1cv8.exe")
+            exe_1cv8c = os.path.join(base_dir, "1cv8c.exe")
 
-            continue
+            # Конфигуратор всегда запускается через 1cv8.exe
+            if mode == "configurator":
+                if os.path.exists(exe_1cv8):
+                    return exe_1cv8
 
-        # Явно выбран толстый клиент
-        if selected_client == "Толстый":
-            if os.path.exists(exe_1cv8):
-                return exe_1cv8
+                continue
 
-            continue
+            # Явно выбран толстый клиент
+            if selected_client == "Толстый":
+                if os.path.exists(exe_1cv8):
+                    return exe_1cv8
 
-        # Явно выбран тонкий клиент
-        if selected_client == "Тонкий":
-            if os.path.exists(exe_1cv8c):
-                return exe_1cv8c
+                continue
 
-            continue
+            # Явно выбран тонкий клиент
+            if selected_client == "Тонкий":
+                if os.path.exists(exe_1cv8c):
+                    return exe_1cv8c
 
-        # Автоматический выбор клиента:
-        # для обычного интерфейса нужен толстый клиент,
-        # для остальных интерфейсов сначала пробуем тонкий
-        if selected_interface == "Обычный":
-            if os.path.exists(exe_1cv8):
-                return exe_1cv8
-        else:
-            if os.path.exists(exe_1cv8c):
-                return exe_1cv8c
+                continue
 
-            if os.path.exists(exe_1cv8):
-                return exe_1cv8
+            # Автоматический выбор клиента:
+            # для обычного интерфейса нужен толстый клиент,
+            # для остальных интерфейсов сначала пробуем тонкий
+            if selected_interface == "Обычный":
+                if os.path.exists(exe_1cv8):
+                    return exe_1cv8
+            else:
+                if os.path.exists(exe_1cv8c):
+                    return exe_1cv8c
+
+                if os.path.exists(exe_1cv8):
+                    return exe_1cv8
 
     return None
 
